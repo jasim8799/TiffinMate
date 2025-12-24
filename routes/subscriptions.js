@@ -18,10 +18,10 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Check if user already has an active subscription
+    // Check if user already has an ACTIVE subscription
     const existingSubscription = await Subscription.findOne({
       userId,
-      status: 'Active', // ✅ MATCHES SCHEMA
+      status: 'Active',
     });
 
     if (existingSubscription) {
@@ -31,14 +31,19 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Create new subscription
+    // Calculate dates
+    const startDate = new Date();
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + 30); // 30 days validity
+
+    // Create subscription
     const subscription = new Subscription({
       userId,
       providerId,
-      mealType,          // ✅ REQUIRED FIELD
-      status: 'Active',  // ✅ VALID ENUM VALUE
-      startDate: new Date(),
-      endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      mealType,
+      status: 'Active',
+      startDate,
+      endDate,
     });
 
     const savedSubscription = await subscription.save();
@@ -74,7 +79,7 @@ router.post('/pause/:subscriptionId', async (req, res) => {
       });
     }
 
-    subscription.status = 'Paused'; // ✅ MATCHES SCHEMA
+    subscription.status = 'Paused';
     await subscription.save();
 
     return res.json({
@@ -104,7 +109,7 @@ router.post('/resume/:subscriptionId', async (req, res) => {
       });
     }
 
-    subscription.status = 'Active'; // ✅ MATCHES SCHEMA
+    subscription.status = 'Active';
     await subscription.save();
 
     return res.json({
