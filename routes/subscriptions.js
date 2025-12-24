@@ -2,14 +2,26 @@ const express = require('express');
 const router = express.Router();
 const Subscription = require('../models/Subscription');
 
-// CREATE SUBSCRIPTION
+/**
+ * CREATE SUBSCRIPTION
+ * POST /api/subscriptions
+ */
 router.post('/', async (req, res) => {
   try {
     const { userId, providerId, mealType } = req.body;
 
+    // Validate required fields
+    if (!userId || !providerId || !mealType) {
+      return res.status(400).json({
+        success: false,
+        message: 'userId, providerId and mealType are required',
+      });
+    }
+
+    // Check if user already has an active subscription
     const existingSubscription = await Subscription.findOne({
       userId,
-      status: 'ACTIVE',
+      status: 'Active', // ✅ MATCHES SCHEMA
     });
 
     if (existingSubscription) {
@@ -19,43 +31,92 @@ router.post('/', async (req, res) => {
       });
     }
 
+    // Create new subscription
     const subscription = new Subscription({
       userId,
       providerId,
-      plan: mealType,
-      status: 'ACTIVE',
+      mealType,          // ✅ REQUIRED FIELD
+      status: 'Active',  // ✅ VALID ENUM VALUE
       startDate: new Date(),
       endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     });
 
-    await subscription.save();
+    const savedSubscription = await subscription.save();
 
-    const populated = await Subscription.findById(subscription._id)
+    const populatedSubscription = await Subscription.findById(savedSubscription._id)
       .populate('providerId');
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      data: populated,
+      data: populatedSubscription,
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error('Subscription create error:', error);
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
   }
 });
 
-// PAUSE
+/**
+ * PAUSE SUBSCRIPTION
+ * POST /api/subscriptions/pause/:subscriptionId
+ */
 router.post('/pause/:subscriptionId', async (req, res) => {
-  const subscription = await Subscription.findById(req.params.subscriptionId);
-  subscription.status = 'PAUSED';
-  await subscription.save();
-  res.json({ success: true });
+  try {
+    const subscription = await Subscription.findById(req.params.subscriptionId);
+
+    if (!subscription) {
+      return res.status(404).json({
+        success: false,
+        message: 'Subscription not found',
+      });
+    }
+
+    subscription.status = 'Paused'; // ✅ MATCHES SCHEMA
+    await subscription.save();
+
+    return res.json({
+      success: true,
+      data: subscription,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
 });
 
-// RESUME
+/**
+ * RESUME SUBSCRIPTION
+ * POST /api/subscriptions/resume/:subscriptionId
+ */
 router.post('/resume/:subscriptionId', async (req, res) => {
-  const subscription = await Subscription.findById(req.params.subscriptionId);
-  subscription.status = 'ACTIVE';
-  await subscription.save();
-  res.json({ success: true });
+  try {
+    const subscription = await Subscription.findById(req.params.subscriptionId);
+
+    if (!subscription) {
+      return res.status(404).json({
+        success: false,
+        message: 'Subscription not found',
+      });
+    }
+
+    subscription.status = 'Active'; // ✅ MATCHES SCHEMA
+    await subscription.save();
+
+    return res.json({
+      success: true,
+      data: subscription,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
 });
 
 module.exports = router;
