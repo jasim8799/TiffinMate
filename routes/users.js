@@ -2,13 +2,15 @@ const express = require("express");
 const router = express.Router();
 const Subscription = require("../models/Subscription");
 
+// GET /api/users/profile/:userId
 router.get("/profile/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
 
+    // IMPORTANT: match schema values exactly
     const subscription = await Subscription.findOne({
-      userId,
-      status: { $in: ["ACTIVE", "PAUSED"] },
+      userId: userId,
+      status: { $in: ["Active", "Paused"] }, // ✅ FIXED
     })
       .sort({ createdAt: -1 })
       .populate("providerId");
@@ -19,14 +21,14 @@ router.get("/profile/:userId", async (req, res) => {
       activeSubscription = {
         _id: subscription._id,
         providerName: subscription.providerId?.name || "Unknown",
-        plan: subscription.plan,
+        plan: subscription.mealType, // ✅ FIXED
         startDate: subscription.startDate,
         endDate: subscription.endDate,
         status: subscription.status,
       };
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       userId,
       name: "Test User",
       phone: "9999999999",
@@ -35,7 +37,10 @@ router.get("/profile/:userId", async (req, res) => {
       activeSubscription,
     });
   } catch (error) {
-    res.status(500).json({ message: "Failed to load profile" });
+    console.error("Profile API error:", error);
+    return res.status(500).json({
+      message: "Failed to load profile",
+    });
   }
 });
 
