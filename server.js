@@ -25,10 +25,12 @@ mongoose
 // Import routes (ONLY ONCE)
 const providersRouter = require('./routes/providers');
 const subscriptionsRouter = require('./routes/subscriptions');
+const usersRouter = require('./routes/users');
 
 // Use routes (ONLY AFTER app is defined)
 app.use('/api/providers', providersRouter);
 app.use('/api/subscriptions', subscriptionsRouter);
+app.use('/api/users', usersRouter);
 
 // Root route
 app.get('/', (req, res) => {
