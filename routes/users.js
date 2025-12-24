@@ -16,12 +16,12 @@ router.get('/profile/:userId', async (req, res) => {
     let activeSubscription = null;
     if (subscription) {
       activeSubscription = {
-        id: subscription._id,
-        providerName: subscription.providerName,
-        plan: subscription.plan,
-        startDate: subscription.startDate,
-        endDate: subscription.endDate,
-        status: subscription.status
+        "_id": subscription._id,
+        "providerName": subscription.providerName,
+        "plan": subscription.plan,
+        "startDate": subscription.startDate,
+        "endDate": subscription.endDate,
+        "status": subscription.status
       };
     }
 
