@@ -1742,6 +1742,26 @@ exports.getMyMealSelection = async (req, res) => {
       }
     });
 
+    // ========================================
+    // FETCH SKIPPED MEALS (CRITICAL FIX)
+    // ========================================
+    const skipRecords = await MealSkip.find({
+      user: req.user._id,
+      deliveryDate: { $gte: start, $lte: end }
+    });
+
+    let lunchSkipped = false;
+    let dinnerSkipped = false;
+
+    skipRecords.forEach(skip => {
+      if (skip.mealType === 'lunch') lunchSkipped = true;
+      if (skip.mealType === 'dinner') dinnerSkipped = true;
+      if (skip.mealType === 'both') {
+        lunchSkipped = true;
+        dinnerSkipped = true;
+      }
+    });
+
     if (process.env.NODE_ENV !== 'production') {
       console.log('🔍 Fetching meals (IST):');
       console.log('   Kitchen-determined deliveryDate:', deliveryDate);
@@ -1870,7 +1890,9 @@ exports.getMyMealSelection = async (req, res) => {
           lunch: null,
           dinner: null,
           lunchIsDefault: false,
-          dinnerIsDefault: false
+          dinnerIsDefault: false,
+          lunchSkipped: lunchSkipped,
+          dinnerSkipped: dinnerSkipped
         }
       });
     }
@@ -1884,6 +1906,8 @@ exports.getMyMealSelection = async (req, res) => {
         dinnerLocked: dinnerLocked,
         lunchIsDefault: lunchIsDefault,
         dinnerIsDefault: dinnerIsDefault,
+        lunchSkipped: lunchSkipped,
+        dinnerSkipped: dinnerSkipped,
         lunchCutoff: cutoffTime.toISOString(), // ✅ Same cutoff for both
         dinnerCutoff: cutoffTime.toISOString(), // ✅ Same cutoff for both
         cutoffTime: cutoffTime.toISOString(), // ✅ Unified cutoff time
