@@ -1857,8 +1857,8 @@ exports.getMyMealSelection = async (req, res) => {
     // UNIFIED LOCK STATUS (SAME FOR BOTH)
     // ========================================
     const isLocked = now.isAfter(cutoffTime);
-    const lunchLocked = isLocked;
-    const dinnerLocked = isLocked;
+    const lunchLocked = isLocked || lunchSkipped;
+    const dinnerLocked = isLocked || dinnerSkipped;
 
     if (process.env.NODE_ENV !== 'production') {
       console.log('🔒 FINAL LOCK STATUS:');
@@ -1894,8 +1894,8 @@ exports.getMyMealSelection = async (req, res) => {
           nextDeliveryDate: deliveryDate.toISOString().split('T')[0],
           cutoffTime: cutoffTime.format('HH:mm'),
           isAfterCutoff: isLocked,
-          lunchLocked: isLocked,
-          dinnerLocked: isLocked,
+          lunchLocked: isLocked || lunchSkipped,
+          dinnerLocked: isLocked || dinnerSkipped,
           lunch: null,
           dinner: null,
           lunchIsDefault: false,
