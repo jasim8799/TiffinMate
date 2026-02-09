@@ -693,44 +693,12 @@ exports.selectMeal = async (req, res) => {
     let processedLunch = null;
     let processedDinner = null;
 
-    // ========================================
-    // 3️⃣ BLOCK MANUAL SELECTION IF SKIPPED
-    // ========================================
-    // Check if meal is already skipped for this date
-    if (lunch) {
-      const { start: skipStart, end: skipEnd } = getISTDayRange(deliveryMoment.toDate());
-      const lunchSkipped = await MealSkip.findOne({
-        user: req.user._id,
-        deliveryDate: { $gte: skipStart, $lte: skipEnd },
-        mealType: 'lunch'
-      });
-      if (lunchSkipped) {
-        return res.status(403).json({
-          success: false,
-          message: 'Lunch is skipped for this date'
-        });
-      }
-    }
 
-    if (dinner) {
-      const { start: skipStart, end: skipEnd } = getISTDayRange(deliveryMoment.toDate());
-      const dinnerSkipped = await MealSkip.findOne({
-        user: req.user._id,
-        deliveryDate: { $gte: skipStart, $lte: skipEnd },
-        mealType: 'dinner'
-      });
-      if (dinnerSkipped) {
-        return res.status(403).json({
-          success: false,
-          message: 'Dinner is skipped for this date'
-        });
-      }
-    }
 
     // ========================================
     // 4️⃣ CHECK FOR EXISTING MEAL ORDERS - REJECT IF EXISTS
     // ========================================
-    // Check for existing lunch order - reject if exists
+    // Check for existing lunch order - reject if exists (unless skipped)
     const { start, end } = getISTDayRange(deliveryDate);
     if (lunch) {
       const existingLunch = await MealOrder.findOne({
@@ -738,7 +706,7 @@ exports.selectMeal = async (req, res) => {
         deliveryDate: { $gte: start, $lte: end },
         mealType: 'lunch'
       });
-      if (existingLunch) {
+      if (existingLunch && existingLunch.status !== 'skipped') {
         return res.status(409).json({
           success: false,
           message: 'Lunch meal already selected for this date'
@@ -746,14 +714,14 @@ exports.selectMeal = async (req, res) => {
       }
     }
 
-    // Check for existing dinner order - reject if exists
+    // Check for existing dinner order - reject if exists (unless skipped)
     if (dinner) {
       const existingDinner = await MealOrder.findOne({
         user: req.user._id,
         deliveryDate: { $gte: start, $lte: end },
         mealType: 'dinner'
       });
-      if (existingDinner) {
+      if (existingDinner && existingDinner.status !== 'skipped') {
         return res.status(409).json({
           success: false,
           message: 'Dinner meal already selected for this date'
@@ -920,6 +888,22 @@ exports.selectMeal = async (req, res) => {
       // Commit the transaction
       await session.commitTransaction();
       session.endSession();
+
+      // ✅ Clear skip record if user re-selected
+      if (processedLunch) {
+        await MealSkip.deleteMany({
+          user: req.user._id,
+          deliveryDate: { $gte: start, $lte: end },
+          mealType: 'lunch'
+        });
+      }
+      if (processedDinner) {
+        await MealSkip.deleteMany({
+          user: req.user._id,
+          deliveryDate: { $gte: start, $lte: end },
+          mealType: 'dinner'
+        });
+      }
     } catch (error) {
       // Abort transaction on error
       await session.abortTransaction();
@@ -1279,6 +1263,31 @@ exports.skipMeal = async (req, res) => {
       mealType,
       reason: reason || 'User skipped meal',
     });
+
+    // ==============================
+    // ✅ SYNC MealOrder WITH SKIP STATE
+    // ==============================
+    const mealTypes = mealType === 'both' ? ['lunch', 'dinner'] : [mealType];
+
+    for (const type of mealTypes) {
+      await MealOrder.findOneAndUpdate(
+        {
+          user: userId,
+          deliveryDate: { $gte: start, $lte: end },
+          mealType: type
+        },
+        {
+          subscription: subscription._id,
+          orderDate: nowIST().toDate(),
+          selectedMeal: null, // 👈 important
+          status: 'skipped', // 👈 user skipped
+          orderSource: 'subscription',
+          cutoffTime: getCutoffTimeForDate(parsedDate.toDate()),
+          isAfterCutoff: false
+        },
+        { upsert: true, new: true }
+      );
+    }
 
     // ==============================
     // 5. EXTEND SUBSCRIPTION
@@ -2306,9 +2315,10 @@ exports.getAggregatedMealOrders = async (req, res) => {
     .populate('user', 'userId name mobile address')
     .lean();
 
-    // Filter out daily meals that don't have paid payments
+    // Filter out daily meals that don't have paid payments and skipped meals
     const filteredOrders = mealOrders.filter(order =>
-      order.orderSource === 'subscription' || order.paymentId
+      (order.orderSource === 'subscription' || order.paymentId) &&
+      order.status !== 'skipped'
     );
 
     // If no meal orders found, return success with empty data
