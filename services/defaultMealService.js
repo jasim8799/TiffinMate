@@ -1,8 +1,6 @@
 const MealOrder = require('../models/MealOrder');
-const MealSkip = require('../models/MealSkip');
 const Subscription = require('../models/Subscription');
 const { getActiveUserIds } = require('../utils/activeUserHelper');
-const { getISTDayRange } = require('../utils/deliveryDateHelper');
 const socketService = require('./socketService');
 const moment = require('moment-timezone');
 const logger = require('../utils/logger');
@@ -34,8 +32,6 @@ async function ensureDefaultMealsForDate(deliveryDate) {
 
     logger.info(`   Active subscriptions: ${activeSubscriptions.length}`);
 
-    const { start, end } = getISTDayRange(deliveryDate);
-
     let createdCount = 0;
     let skippedCount = 0;
 
@@ -47,13 +43,7 @@ async function ensureDefaultMealsForDate(deliveryDate) {
         mealType: 'lunch'
       });
 
-      const lunchSkipped = await MealSkip.exists({
-        user: subscription.user._id,
-        deliveryDate: { $gte: start, $lte: end },
-        mealType: { $in: ['lunch', 'both'] }
-      });
-
-      if (!hasLunch && !lunchSkipped) {
+      if (!hasLunch) {
         const dayOfWeek = deliveryMoment.day();
         const planType = subscription.planType || 'classic';
         const defaultLunchName = getDefaultMealForDay(dayOfWeek, planType, 'lunch');
@@ -98,13 +88,7 @@ async function ensureDefaultMealsForDate(deliveryDate) {
         mealType: 'dinner'
       });
 
-      const dinnerSkipped = await MealSkip.exists({
-        user: subscription.user._id,
-        deliveryDate: { $gte: start, $lte: end },
-        mealType: { $in: ['dinner', 'both'] }
-      });
-
-      if (!hasDinner && !dinnerSkipped) {
+      if (!hasDinner) {
         const dayOfWeek = deliveryMoment.day();
         const planType = subscription.planType || 'classic';
         const defaultDinnerName = getDefaultMealForDay(dayOfWeek, planType, 'dinner');
