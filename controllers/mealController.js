@@ -1900,23 +1900,30 @@ exports.getMyMealSelection = async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
+        orderSource: 'subscription',
+        subscriptionStatus: activeSubscription.status,
+        nextDeliveryDate: deliveryDate.toISOString().split('T')[0],
+
         lunch: lunchMeal,
         dinner: dinnerMeal,
-        lunchLocked: lunchLocked,
-        dinnerLocked: dinnerLocked,
-        lunchIsDefault: lunchIsDefault,
-        dinnerIsDefault: dinnerIsDefault,
-        lunchSkipped: lunchSkipped,
-        dinnerSkipped: dinnerSkipped,
-        lunchCutoff: cutoffTime.toISOString(), // ✅ Same cutoff for both
-        dinnerCutoff: cutoffTime.toISOString(), // ✅ Same cutoff for both
-        cutoffTime: cutoffTime.toISOString(), // ✅ Unified cutoff time
-        serverTime: now.toISOString(), // ✅ Server time in UTC ISO format
-        serverTimeFormatted: now.format('YYYY-MM-DD HH:mm:ss') + ' IST', // ✅ Human readable with IST label
-        autoDefaultsCreated: autoDefaultsCreated, // ✅ Flag indicating if defaults were auto-created
-        defaultMeals: defaultMeals,
-        dietaryPreference: dietaryPreference,
-        subscriptionPlanType: subscriptionPlanType
+
+        lunchLocked,
+        dinnerLocked,
+
+        lunchIsDefault,
+        dinnerIsDefault,
+
+        lunchSkipped,
+        dinnerSkipped,
+
+        cutoffTime: cutoffTime.toISOString(),
+        serverTime: now.toISOString(),
+        serverTimeFormatted: now.format('YYYY-MM-DD HH:mm:ss') + ' IST',
+
+        autoDefaultsCreated,
+        defaultMeals,
+        dietaryPreference,
+        subscriptionPlanType
       }
     });
   } catch (error) {
