@@ -309,16 +309,7 @@ exports.selectMeal = async (req, res) => {
       console.log(`   - Backend determined open slot (no frontend override)`);
     }
 
-    // Validate that at least one meal is selected
-    if (!lunch && !dinner) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('⚠️ No meals selected - both lunch and dinner are null/undefined');
-    }
-      return res.status(400).json({
-        success: false,
-        message: 'Please select at least one meal (lunch or dinner)'
-      });
-    }
+
 
     // ========================================
     // STRUCTURED LOGGING: Meal Selection
@@ -551,6 +542,39 @@ exports.selectMeal = async (req, res) => {
     // UNIFIED CUTOFF TIME (MANDATORY FOR SCHEMA)
     // ========================================
     const cutoffTime = getCutoffTimeForDate(deliveryMoment.toDate());
+
+    // ==============================
+    // HANDLE SKIP BOTH (no meals selected)
+    // ==============================
+    if (!processedLunch && !processedDinner) {
+      const mealTypes = ['lunch', 'dinner'];
+
+      for (const mt of mealTypes) {
+        await MealOrder.findOneAndUpdate(
+          {
+            user: req.user._id,
+            deliveryDate: deliveryMoment.toDate(),
+            mealType: mt
+          },
+          {
+            subscription: subscription._id,
+            orderSource: 'subscription',
+            orderDate: nowIST().toDate(),
+            selectedMeal: null, // skip
+            skipped: true,
+            cutoffTime: cutoffTime.toDate(),
+            isAfterCutoff: false,
+            status: 'confirmed'
+          },
+          { upsert: true }
+        );
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'Meals skipped successfully'
+      });
+    }
 
     // ========================================
     // MONGO DB TRANSACTION: Atomic meal selection
@@ -1287,7 +1311,7 @@ exports.getMyMealSelection = async (req, res) => {
     // Check if user has active subscription
     const subscription = await Subscription.findOne({
       user: req.user._id,
-      status: 'active'
+      status: { $in: ['active', 'grace', 'paused'] }
     }).sort({ createdAt: -1 });
 
     const hasActiveSubscription = !!subscription;
@@ -1489,11 +1513,11 @@ exports.getMyMealSelection = async (req, res) => {
       if (order.mealType === 'lunch') {
         lunchMeal = order.selectedMeal;
         lunchIsDefault = order.selectedMeal?.isDefault || false;
-        lunchSkipped = order.skipped || false;
+        lunchSkipped = order.selectedMeal == null;
       } else if (order.mealType === 'dinner') {
         dinnerMeal = order.selectedMeal;
         dinnerIsDefault = order.selectedMeal?.isDefault || false;
-        dinnerSkipped = order.skipped || false;
+        dinnerSkipped = order.selectedMeal == null;
       }
     });
 
@@ -1554,14 +1578,12 @@ exports.getMyMealSelection = async (req, res) => {
           nextDeliveryDate: deliveryDate.toISOString().split('T')[0],
           cutoffTime: cutoffTime.format('HH:mm'),
           isAfterCutoff: isLocked,
-          lunchLocked: isLocked || lunchSkipped,
-          dinnerLocked: isLocked || dinnerSkipped,
+          lunchLocked: isLocked,
+          dinnerLocked: isLocked,
           lunch: null,
           dinner: null,
           lunchIsDefault: false,
-          dinnerIsDefault: false,
-          lunchSkipped: lunchSkipped,
-          dinnerSkipped: dinnerSkipped
+          dinnerIsDefault: false
         }
       });
     }
@@ -1581,9 +1603,6 @@ exports.getMyMealSelection = async (req, res) => {
 
         lunchIsDefault,
         dinnerIsDefault,
-
-        lunchSkipped,
-        dinnerSkipped,
 
         selectionCompleted,
 
@@ -1730,7 +1749,7 @@ exports.getWeeklyMenu = async (req, res) => {
     // Get user's active subscription to determine plan category
     const subscription = await Subscription.findOne({
       user: req.user._id,
-      status: 'active'
+      status: { $in: ['active', 'grace', 'paused'] }
     }).sort({ createdAt: -1 });
 
     let allowedCategories = ['classic']; // Default to classic
@@ -1834,7 +1853,7 @@ exports.getPremiumCategories = async (req, res) => {
     // Get user's active subscription
     const subscription = await Subscription.findOne({
       user: req.user._id,
-      status: 'active'
+      status: { $in: ['active', 'grace', 'paused'] }
     }).sort({ createdAt: -1 });
 
     if (!subscription) {
@@ -2244,7 +2263,7 @@ exports.getPremiumItems = async (req, res) => {
     // Get user's subscription to check plan type and dietary preference
     const subscription = await Subscription.findOne({
       user: userId,
-      status: 'active'
+      status: { $in: ['active', 'grace', 'paused'] }
     });
 
     if (!subscription) {
