@@ -9,7 +9,7 @@ const mealController = require('../controllers/mealController');
 // 🔐 Subscription-based routes
 router.post('/select', protect, requireActiveSubscription, requireRestaurantOpen, mealController.selectMeal);
 router.post('/skip', protect, requireActiveSubscription, requireRestaurantOpen, mealController.skipMeal);
-router.get('/my-selection', protect, mealController.getMyMealSelectionByOffset); // ✅ SUPPORTS OFFSET PARAMETER FOR TIME-BASED TABS
+router.get('/my-selection', protect, mealController.getMyMealSelection); // ✅ SUPPORTS OFFSET PARAMETER FOR TIME-BASED TABS
 
 // 🟢 Daily meal routes (NO subscription middleware)
 router.post('/daily/select', protect, mealController.selectDailyMeal);
