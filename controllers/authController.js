@@ -11,6 +11,7 @@ const { sanitizeMobile } = require('../utils/validation');
 // @desc    Check service availability
 // @route   POST /api/auth/check-service
 // @access  Public
+//test
 exports.checkServiceAvailability = async (req, res) => {
   try {
     const { pincode } = req.body;
