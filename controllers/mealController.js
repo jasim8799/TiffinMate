@@ -1,5 +1,4 @@
 const MealOrder = require('../models/MealOrder');
-const MealSkip = require('../models/MealSkip');
 const DefaultMeal = require('../models/DefaultMeal');
 const WeeklyMenu = require('../models/WeeklyMenu');
 const Subscription = require('../models/Subscription');
@@ -446,39 +445,7 @@ exports.selectMeal = async (req, res) => {
 
 
 
-    // ========================================
-    // 4️⃣ CHECK FOR EXISTING MEAL ORDERS - REJECT IF EXISTS
-    // ========================================
-    // Check for existing lunch order - reject if exists
-    const { start, end } = getISTDayRange(deliveryDate);
-    if (lunch) {
-      const existingLunch = await MealOrder.findOne({
-        user: req.user._id,
-        deliveryDate: { $gte: start, $lte: end },
-        mealType: 'lunch'
-      });
-      if (existingLunch) {
-        return res.status(409).json({
-          success: false,
-          message: 'Lunch meal already selected for this date'
-        });
-      }
-    }
 
-    // Check for existing dinner order - reject if exists
-    if (dinner) {
-      const existingDinner = await MealOrder.findOne({
-        user: req.user._id,
-        deliveryDate: { $gte: start, $lte: end },
-        mealType: 'dinner'
-      });
-      if (existingDinner) {
-        return res.status(409).json({
-          success: false,
-          message: 'Dinner meal already selected for this date'
-        });
-      }
-    }
 
     // ========================================
     // 4️⃣ VEG / NON-VEG MUTUAL EXCLUSION & VALIDATION (PREMIUM ONLY)
@@ -611,7 +578,7 @@ exports.selectMeal = async (req, res) => {
           },
           { upsert: true, new: true, session }
         );
-        console.log('✅ Lunch order upserted');
+        debugLog('✅ Lunch order upserted');
       }
 
       // Handle dinner selection
@@ -633,28 +600,12 @@ exports.selectMeal = async (req, res) => {
           },
           { upsert: true, new: true, session }
         );
-        console.log('✅ Dinner order upserted');
+        debugLog('✅ Dinner order upserted');
       }
 
       // Commit the transaction
       await session.commitTransaction();
       session.endSession();
-
-      // ✅ Clear skip record if user re-selected
-      if (processedLunch) {
-        await MealSkip.deleteMany({
-          user: req.user._id,
-          deliveryDate: { $gte: start, $lte: end },
-          mealType: 'lunch'
-        });
-      }
-      if (processedDinner) {
-        await MealSkip.deleteMany({
-          user: req.user._id,
-          deliveryDate: { $gte: start, $lte: end },
-          mealType: 'dinner'
-        });
-      }
     } catch (error) {
       // Abort transaction on error
       await session.abortTransaction();
@@ -732,7 +683,8 @@ exports.selectMeal = async (req, res) => {
     }
 
     // Verify meals were saved by querying DB
-    // ✅ HARDENING FIX 1: Use getISTDayRange for date range consistency (reuse start/end from line 733)
+    // ✅ HARDENING FIX 1: Use getISTDayRange for date range consistency
+    const { start, end } = getISTDayRange(deliveryMoment.toDate());
     const verifyMeals = await MealOrder.find({
       user: req.user._id,
       deliveryDate: { $gte: start, $lte: end }
@@ -971,12 +923,9 @@ exports.skipMeal = async (req, res) => {
     }
 
     // ==============================
-    // 2. ACTIVE SUBSCRIPTION
+    // 2. ACTIVE SUBSCRIPTION (reuse from middleware)
     // ==============================
-    const subscription = await Subscription.findOne({
-      user: userId,
-      status: 'active',
-    });
+    const subscription = req.subscription; // Already validated by requireActiveSubscription middleware
 
     if (!subscription) {
       return res.status(403).json({
@@ -986,58 +935,35 @@ exports.skipMeal = async (req, res) => {
     }
 
     // ==============================
-    // 3. IDEMPOTENT CHECK (IST RANGE SAFE)
+    // 3. CREATE SKIP MealOrder RECORDS (UPSERT - ALLOW OVERWRITE)
     // ==============================
-    const { start, end } = getISTDayRange(parsedDate.toDate());
-
-    const existingSkip = await MealSkip.findOne({
-      user: userId,
-      deliveryDate: { $gte: start, $lte: end },
-      mealType: { $in: [mealType, 'both'] },
-    });
-
-    if (existingSkip) {
-      return res.json({
-        success: true,
-        message: 'Meal already skipped',
-        data: existingSkip,
-      });
-    }
-
-    // ==============================
-    // 4. CREATE SKIP RECORD
-    // ==============================
-    const skipRecord = await MealSkip.create({
-      user: userId,
-      subscription: subscription._id,
-      deliveryDate: parsedDate.toDate(),
-      mealType,
-      reason: reason || 'User skipped meal',
-    });
-
-    // ==============================
-    // ✅ SYNC MealOrder WITH SKIP STATE
-    // ==============================
+    const cutoffTime = getCutoffTimeForDate(parsedDate.toDate());
+    const skipOrders = [];
     const mealTypes = mealType === 'both' ? ['lunch', 'dinner'] : [mealType];
 
-    // Delete any existing MealOrder so default won't exist
-    await MealOrder.deleteMany({
-      user: userId,
-      deliveryDate: { $gte: start, $lte: end },
-      mealType: { $in: mealTypes }
-    });
+    for (const mt of mealTypes) {
+      const skipOrder = await MealOrder.findOneAndUpdate(
+        {
+          user: userId,
+          deliveryDate: parsedDate.toDate(),
+          mealType: mt
+        },
+        {
+          subscription: subscription._id,
+          selectedMeal: null,
+          skipped: true,
+          orderSource: 'subscription',
+          orderDate: nowIST().toDate(),
+          cutoffTime: cutoffTime.toDate(),
+          isAfterCutoff: false,
+          status: 'confirmed'
+        },
+        { upsert: true, new: true }
+      );
+      skipOrders.push(skipOrder);
+    }
 
-    // ==============================
-    // 5. EXTEND SUBSCRIPTION
-    // ==============================
-    subscription.endDate = moment(subscription.endDate)
-      .add(1, 'day')
-      .toDate();
 
-    subscription.totalDays += 1;
-    subscription.remainingDays += 1;
-
-    await subscription.save();
 
     // ==============================
     // 6. SUCCESS
@@ -1045,7 +971,7 @@ exports.skipMeal = async (req, res) => {
     return res.json({
       success: true,
       message: 'Meal skipped successfully',
-      data: skipRecord,
+      data: skipOrders,
     });
   } catch (error) {
     console.error('Skip meal error:', error);
@@ -1084,16 +1010,16 @@ const validateMealSelection = async (req) => {
     throw new Error('Subscription is not active');
   }
 
-  // 2. Check if meal is already skipped (future-proofing)
-  const { start: skipStart, end: skipEnd } = getISTDayRange(toIST(deliveryDate).toDate());
-  const skipExists = await MealSkip.findOne({
+  // 2. Check if meal order already exists (future-proofing)
+  const { start: orderStart, end: orderEnd } = getISTDayRange(toIST(deliveryDate).toDate());
+  const orderExists = await MealOrder.findOne({
     user: req.user._id,
-    deliveryDate: { $gte: skipStart, $lte: skipEnd },
+    deliveryDate: { $gte: orderStart, $lte: orderEnd },
     mealType: lunch ? 'lunch' : 'dinner'
   });
 
-  if (skipExists) {
-    throw new Error('Meal is skipped for this date');
+  if (orderExists) {
+    throw new Error('Meal order already exists for this date');
   }
 
   // 2. KITCHEN-CENTRIC: Delivery date must be the next orderable delivery date
@@ -1220,16 +1146,16 @@ exports.planMeals = async (req, res) => {
           throw new Error(`Cutoff passed for ${dateStr}. Cannot plan meals after 11:00 PM on the previous day.`);
         }
 
-        // BUG 2 FIX: Check if meal is already skipped for this date (include 'both' for backward compatibility)
-        const { start: skipStart, end: skipEnd } = getISTDayRange(currentDate.toDate());
-        const skipExists = await MealSkip.findOne({
+        // Check if meal order already exists for this date
+        const { start: orderStart, end: orderEnd } = getISTDayRange(currentDate.toDate());
+        const orderExists = await MealOrder.findOne({
           user: req.user._id,
-          deliveryDate: { $gte: skipStart, $lte: skipEnd },
-          mealType: { $in: [mealType, 'both'] }
+          deliveryDate: { $gte: orderStart, $lte: orderEnd },
+          mealType: mealType
         });
 
-        if (skipExists) {
-          throw new Error(`Meal is skipped for ${dateStr}`);
+        if (orderExists) {
+          throw new Error(`Meal order already exists for ${dateStr}`);
         }
 
         // Create mock request for validation
@@ -1490,24 +1416,10 @@ exports.getMyMealSelection = async (req, res) => {
     });
 
     // ========================================
-    // FETCH SKIPPED MEALS (CRITICAL FIX)
+    // DETERMINE SKIPPED MEALS FROM MealOrder
     // ========================================
-    const skipRecords = await MealSkip.find({
-      user: req.user._id,
-      deliveryDate: { $gte: start, $lte: end }
-    });
-
     let lunchSkipped = false;
     let dinnerSkipped = false;
-
-    skipRecords.forEach(skip => {
-      if (skip.mealType === 'lunch') lunchSkipped = true;
-      if (skip.mealType === 'dinner') dinnerSkipped = true;
-      if (skip.mealType === 'both') {
-        lunchSkipped = true;
-        dinnerSkipped = true;
-      }
-    });
 
     if (process.env.NODE_ENV !== 'production') {
       console.log('🔍 Fetching meals (IST):');
@@ -1577,9 +1489,11 @@ exports.getMyMealSelection = async (req, res) => {
       if (order.mealType === 'lunch') {
         lunchMeal = order.selectedMeal;
         lunchIsDefault = order.selectedMeal?.isDefault || false;
+        lunchSkipped = order.skipped || false;
       } else if (order.mealType === 'dinner') {
         dinnerMeal = order.selectedMeal;
         dinnerIsDefault = order.selectedMeal?.isDefault || false;
+        dinnerSkipped = order.skipped || false;
       }
     });
 
@@ -2026,23 +1940,23 @@ exports.getAggregatedMealOrders = async (req, res) => {
     // KITCHEN VIEW: READ-ONLY - No meal creation during fetch
     // =========================================================
     // We only show existing meals, no auto-creation in kitchen view
-    console.log('   ℹ️  Kitchen view may auto-create DEFAULT meals after cutoff (subscription only)');
-    console.log('');
+    debugLog('   ℹ️  Kitchen view may auto-create DEFAULT meals after cutoff (subscription only)');
+    debugLog('');
 
     // ✅ CRITICAL: Get ONLY active users (exclude deleted/deactivated)
     // This ensures deleted users are NEVER counted in kitchen view
     const activeUserIds = await getActiveUserIds();
 
-    console.log('👥 [ACTIVE USERS FILTER]');
-    console.log(`   - Total Active Users: ${activeUserIds.length}`);
-    console.log('   - Criteria: role=customer, isActive=true, deletedAt does not exist');
-    console.log('   - ✅ Deleted users will be EXCLUDED from counts');
-    console.log('');
+    debugLog('👥 [ACTIVE USERS FILTER]');
+    debugLog(`   - Total Active Users: ${activeUserIds.length}`);
+    debugLog('   - Criteria: role=customer, isActive=true, deletedAt does not exist');
+    debugLog('   - ✅ Deleted users will be EXCLUDED from counts');
+    debugLog('');
 
     // ======================================================================
     // ✅ FETCH MEALS FOR SELECTED DATE ONLY
     // ======================================================================
-    console.log('🍽️ [KITCHEN] Getting meals for selected date...');
+    debugLog('🍽️ [KITCHEN] Getting meals for selected date...');
 
     // Fetch paid daily meals safely using payment join
     const mealOrders = await MealOrder.find({
@@ -2066,13 +1980,13 @@ exports.getAggregatedMealOrders = async (req, res) => {
     // Filter out daily meals that don't have paid payments and skipped meals
     const filteredOrders = mealOrders.filter(order =>
       (order.orderSource === 'subscription' || order.paymentId) &&
-      order.status !== 'skipped'
+      !order.skipped
     );
 
     // If no meal orders found, return success with empty data
     if (filteredOrders.length === 0) {
-      console.log('\n⚠️ NO MEALS FOUND FOR SELECTED DATE');
-      console.log('   Returning success with empty counts and arrays');
+    debugLog('\n⚠️ NO MEALS FOUND FOR SELECTED DATE');
+    debugLog('   Returning success with empty counts and arrays');
 
       return res.status(200).json({
         success: true,
@@ -2106,26 +2020,26 @@ exports.getAggregatedMealOrders = async (req, res) => {
 
     const totalUsers = filteredOrders.length;
 
-    console.log('\n📊 Kitchen Query Results:');
-    console.log(`   - Total Orders: ${totalUsers}`);
-    console.log(`   - Lunch: ${lunchCount}`);
-    console.log(`   - Dinner: ${dinnerCount}`);
+    debugLog('\n📊 Kitchen Query Results:');
+    debugLog(`   - Total Orders: ${totalUsers}`);
+    debugLog(`   - Lunch: ${lunchCount}`);
+    debugLog(`   - Dinner: ${dinnerCount}`);
 
     // ✅ VERIFICATION: Compare counts
-    console.log('\n🔍 [VERIFICATION CHECKPOINT]');
-    console.log('==============================================');
-    console.log(`   Active Users (DB count):        ${activeUserIds.length}`);
-    console.log(`   Meal Orders Found (DB count):   ${totalUsers}`);
-    console.log(`   Expected: Meal Orders ≤ Active Users × 2 (lunch + dinner)`);
-    console.log(`   Max Possible: ${activeUserIds.length * 2} meals (if all users have both)`);
+    debugLog('\n🔍 [VERIFICATION CHECKPOINT]');
+    debugLog('==============================================');
+    debugLog(`   Active Users (DB count):        ${activeUserIds.length}`);
+    debugLog(`   Meal Orders Found (DB count):   ${totalUsers}`);
+    debugLog(`   Expected: Meal Orders ≤ Active Users × 2 (lunch + dinner)`);
+    debugLog(`   Max Possible: ${activeUserIds.length * 2} meals (if all users have both)`);
 
     if (totalUsers > activeUserIds.length * 2) {
       console.error('   ❌ ERROR: More meals than possible!');
       console.error('   ❌ Check for duplicates or inactive user meals');
     } else {
-      console.log('   ✅ Count validation PASSED');
+      debugLog('   ✅ Count validation PASSED');
     }
-    console.log('==============================================');
+    debugLog('==============================================');
 
     // ========================================
     // UNIFIED CUTOFF TIME STATUS (11:00 PM)
@@ -2133,33 +2047,33 @@ exports.getAggregatedMealOrders = async (req, res) => {
     const now = nowIST();
     const unifiedCutoff = getCutoffTimeForDate(targetDate.toDate());
 
-    console.log('\n⏰ Unified Cutoff Time Status:');
-    console.log(`   - Current Time: ${now.format('HH:mm:ss')}`);
-    console.log(`   - Unified Cutoff (11:00 PM previous day): ${now.isAfter(unifiedCutoff) ? 'PASSED ❌' : 'Not Passed ✅'}`);
-    console.log('\n💡 Cutoff Impact:');
-    console.log('   - If cutoff PASSED → new orders go to TOMORROW');
-    console.log('   - If cutoff NOT PASSED → new orders go to TODAY');
-    console.log('   - Kitchen shows meals for SELECTED date only');
+    debugLog('\n⏰ Unified Cutoff Time Status:');
+    debugLog(`   - Current Time: ${now.format('HH:mm:ss')}`);
+    debugLog(`   - Unified Cutoff (11:00 PM previous day): ${now.isAfter(unifiedCutoff) ? 'PASSED ❌' : 'Not Passed ✅'}`);
+    debugLog('\n💡 Cutoff Impact:');
+    debugLog('   - If cutoff PASSED → new orders go to TOMORROW');
+    debugLog('   - If cutoff NOT PASSED → new orders go to TODAY');
+    debugLog('   - Kitchen shows meals for SELECTED date only');
 
     if (filteredOrders.length > 0) {
-      console.log('\n📝 Sample Meal Orders (first 3):');
+      debugLog('\n📝 Sample Meal Orders (first 3):');
       filteredOrders.slice(0, 3).forEach((order, idx) => {
-        console.log(`   ${idx + 1}. User: ${order.user.name}`);
-        console.log(`      - Created: ${moment(order.createdAt).format('YYYY-MM-DD HH:mm:ss')}`);
-        console.log(`      - Delivery: ${moment(order.deliveryDate).format('YYYY-MM-DD HH:mm:ss')}`);
-        console.log(`      - Type: ${order.mealType}`);
+        debugLog(`   ${idx + 1}. User: ${order.user.name}`);
+        debugLog(`      - Created: ${moment(order.createdAt).format('YYYY-MM-DD HH:mm:ss')}`);
+        debugLog(`      - Delivery: ${moment(order.deliveryDate).format('YYYY-MM-DD HH:mm:ss')}`);
+        debugLog(`      - Type: ${order.mealType}`);
       });
     }
-    console.log(`      - Total: ${totalUsers}`);
+    debugLog(`      - Total: ${totalUsers}`);
 
     const total = totalUsers;
 
     // Debug: Show first few meal orders
     if (filteredOrders.length > 0) {
-      console.log('   ✅ Sample meal orders:');
+      debugLog('   ✅ Sample meal orders:');
       filteredOrders.slice(0, 5).forEach((order, i) => {
         const isDefaultFlag = order.selectedMeal?.isDefault ? '🔵 DEFAULT' : '🟢 USER-SELECTED';
-        console.log(`   [${i}] ${isDefaultFlag} | ${order.user?.name} - ${order.mealType}: ${order.selectedMeal?.name}`);
+        debugLog(`   [${i}] ${isDefaultFlag} | ${order.user?.name} - ${order.mealType}: ${order.selectedMeal?.name}`);
       });
     }
 
@@ -2247,9 +2161,9 @@ exports.getAggregatedMealOrders = async (req, res) => {
         return obj;
       }, {});
 
-    console.log('   📊 Order Summary:', orderSummary);
-    console.log('   🥘 Ingredient Summary:', ingredientSummary);
-    console.log('   👥 User Meal Details count:', userMealDetails.length);
+    debugLog('   📊 Order Summary:', orderSummary);
+    debugLog('   🥘 Ingredient Summary:', ingredientSummary);
+    debugLog('   👥 User Meal Details count:', userMealDetails.length);
 
     res.status(200).json({
       success: true,
