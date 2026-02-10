@@ -1,6 +1,5 @@
 const MealOrder = require('../models/MealOrder');
 const RestaurantStatus = require('../models/RestaurantStatus');
-const MealSkip = require('../models/MealSkip');
 const DefaultMeal = require('../models/DefaultMeal');
 const WeeklyMenu = require('../models/WeeklyMenu');
 const Subscription = require('../models/Subscription');
@@ -326,12 +325,12 @@ const ensureDefaultMealsExist = async (deliveryDate, mealType = null) => {
         // ========================================
         // SKIP AUTO-ASSIGN DEFAULT MEALS (CRON)
         // ========================================
-        // BUG 3 FIX: Include 'both' for backward compatibility with old data
         const { start: skipStart, end: skipEnd } = getISTDayRange(deliveryDate);
-        const skipExists = await MealSkip.findOne({
+        const skipExists = await MealOrder.findOne({
           user: subscription.user._id,
           deliveryDate: { $gte: skipStart, $lte: skipEnd },
-          mealType: { $in: [type, 'both'] }
+          mealType: type,
+          skipped: true
         });
 
         if (skipExists) {
@@ -707,7 +706,7 @@ exports.selectMeal = async (req, res) => {
         deliveryDate: { $gte: start, $lte: end },
         mealType: 'lunch'
       });
-      if (existingLunch && existingLunch.status !== 'skipped') {
+      if (existingLunch && !existingLunch.skipped) {
         return res.status(409).json({
           success: false,
           message: 'Lunch meal already selected for this date'
@@ -722,7 +721,7 @@ exports.selectMeal = async (req, res) => {
         deliveryDate: { $gte: start, $lte: end },
         mealType: 'dinner'
       });
-      if (existingDinner && existingDinner.status !== 'skipped') {
+      if (existingDinner && !existingDinner.skipped) {
         return res.status(409).json({
           success: false,
           message: 'Dinner meal already selected for this date'
@@ -1350,10 +1349,11 @@ const validateMealSelection = async (req) => {
 
   // 2. Check if meal is already skipped (future-proofing)
   const { start: skipStart, end: skipEnd } = getISTDayRange(toIST(deliveryDate).toDate());
-  const skipExists = await MealSkip.findOne({
+  const skipExists = await MealOrder.findOne({
     user: req.user._id,
     deliveryDate: { $gte: skipStart, $lte: skipEnd },
-    mealType: lunch ? 'lunch' : 'dinner'
+    mealType: lunch ? 'lunch' : 'dinner',
+    skipped: true
   });
 
   if (skipExists) {
@@ -1486,10 +1486,11 @@ exports.planMeals = async (req, res) => {
 
         // BUG 2 FIX: Check if meal is already skipped for this date (include 'both' for backward compatibility)
         const { start: skipStart, end: skipEnd } = getISTDayRange(currentDate.toDate());
-        const skipExists = await MealSkip.findOne({
+        const skipExists = await MealOrder.findOne({
           user: req.user._id,
           deliveryDate: { $gte: skipStart, $lte: skipEnd },
-          mealType: { $in: [mealType, 'both'] }
+          mealType: mealType,
+          skipped: true
         });
 
         if (skipExists) {
@@ -1759,23 +1760,14 @@ exports.getMyMealSelection = async (req, res) => {
     });
 
     // ========================================
-    // FETCH SKIPPED MEALS (CRITICAL FIX)
+    // DETERMINE SKIPPED MEALS FROM MEAL ORDERS
     // ========================================
-    const skipRecords = await MealSkip.find({
-      user: req.user._id,
-      deliveryDate: { $gte: start, $lte: end }
-    });
-
     let lunchSkipped = false;
     let dinnerSkipped = false;
 
-    skipRecords.forEach(skip => {
-      if (skip.mealType === 'lunch') lunchSkipped = true;
-      if (skip.mealType === 'dinner') dinnerSkipped = true;
-      if (skip.mealType === 'both') {
-        lunchSkipped = true;
-        dinnerSkipped = true;
-      }
+    mealOrders.forEach(order => {
+      if (order.mealType === 'lunch' && order.skipped) lunchSkipped = true;
+      if (order.mealType === 'dinner' && order.skipped) dinnerSkipped = true;
     });
 
     if (process.env.NODE_ENV !== 'production') {
@@ -2703,6 +2695,36 @@ exports.getPremiumItems = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching premium menu items',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get meal selection for delivery date (with offset support for time-based tabs)
+// @route   GET /api/meals/my-selection?offset=0
+// @access  Private (Customer)
+exports.getMyMealSelectionByOffset = async (req, res) => {
+  try {
+    const offset = parseInt(req.query.offset) || 0;
+
+    // Delegate to existing logic based on offset
+    if (offset === 0) {
+      // Tomorrow tab - next orderable delivery date
+      return exports.getMyMealSelection(req, res);
+    } else if (offset === -1) {
+      // Today tab - current date (read-only)
+      return exports.getMyMealSelection(req, res);
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid offset. Must be 0 (tomorrow) or -1 (today)'
+      });
+    }
+  } catch (error) {
+    console.error('Get meal selection by offset error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching meal selection',
       error: error.message
     });
   }
