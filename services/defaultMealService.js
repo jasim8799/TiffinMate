@@ -59,22 +59,29 @@ async function ensureDefaultMealsForDate(deliveryDate) {
         const planType = subscription.planType || 'classic';
         const defaultLunchName = getDefaultMealForDay(dayOfWeek, planType, 'lunch');
 
-        await MealOrder.create({
-          user: subscription.user._id,
-          subscription: subscription._id,
-          orderDate: moment.tz('Asia/Kolkata').toDate(),
-          deliveryDate: deliveryDate,
-          mealType: 'lunch',
-          selectedMeal: {
-            name: defaultLunchName,
-            items: [],
-            isDefault: true
+        await MealOrder.findOneAndUpdate(
+          {
+            user: subscription.user._id,
+            deliveryDate: deliveryDate,
+            mealType: 'lunch'
           },
-          cutoffTime: deliveryMoment.clone().subtract(1, 'day').hour(17).minute(30).toDate(),
-          isAfterCutoff: true,
-          status: 'confirmed',
-          createdBy: 'auto-default'
-        });
+          {
+            $setOnInsert: {
+              subscription: subscription._id,
+              orderDate: moment.tz('Asia/Kolkata').toDate(),
+              selectedMeal: {
+                name: defaultLunchName,
+                items: [],
+                isDefault: true
+              },
+              cutoffTime: getCutoffTimeForDate(deliveryDate),
+              isAfterCutoff: true,
+              status: 'confirmed',
+              createdBy: 'auto-default'
+            }
+          },
+          { upsert: true, new: false }
+        );
 
         createdCount++;
         logger.info(`   ✅ Created default lunch: ${subscription.user.name}`);
@@ -112,22 +119,29 @@ async function ensureDefaultMealsForDate(deliveryDate) {
         const planType = subscription.planType || 'classic';
         const defaultDinnerName = getDefaultMealForDay(dayOfWeek, planType, 'dinner');
 
-        await MealOrder.create({
-          user: subscription.user._id,
-          subscription: subscription._id,
-          orderDate: moment.tz('Asia/Kolkata').toDate(),
-          deliveryDate: deliveryDate,
-          mealType: 'dinner',
-          selectedMeal: {
-            name: defaultDinnerName,
-            items: [],
-            isDefault: true
+        await MealOrder.findOneAndUpdate(
+          {
+            user: subscription.user._id,
+            deliveryDate: deliveryDate,
+            mealType: 'dinner'
           },
-          cutoffTime: deliveryMoment.clone().subtract(1, 'day').hour(17).minute(30).toDate(),
-          isAfterCutoff: true,
-          status: 'confirmed',
-          createdBy: 'auto-default'
-        });
+          {
+            $setOnInsert: {
+              subscription: subscription._id,
+              orderDate: moment.tz('Asia/Kolkata').toDate(),
+              selectedMeal: {
+                name: defaultDinnerName,
+                items: [],
+                isDefault: true
+              },
+              cutoffTime: getCutoffTimeForDate(deliveryDate),
+              isAfterCutoff: true,
+              status: 'confirmed',
+              createdBy: 'auto-default'
+            }
+          },
+          { upsert: true, new: false }
+        );
 
         createdCount++;
         logger.info(`   ✅ Created default dinner: ${subscription.user.name}`);

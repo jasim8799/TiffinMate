@@ -270,256 +270,7 @@ const processPremiumMealSelection = (meal, dietaryPreference) => {
   return null;
 };
 
-// =========================================================
-// HELPER: Ensure default meals exist (IDEMPOTENT)
-// Uses findOneAndUpdate with upsert - safe to call multiple times
-// NO DUPLICATES - guaranteed by unique index + upsert pattern
-// =========================================================
-const ensureDefaultMealsExist = async (deliveryDate, mealType = null) => {
-  try {
-    if (process.env.NODE_ENV !== 'production') {
-      debugLog('🔧 [KITCHEN READINESS] Ensuring default meals exist (IDEMPOTENT)...');
-      debugLog('   Delivery Date:', moment(deliveryDate).format('YYYY-MM-DD'));
-      debugLog('   Meal Type:', mealType || 'BOTH (lunch + dinner)');
-    }
 
-    // ✅ CRITICAL FIX: Get all ACTIVE USERS with ACTIVE SUBSCRIPTIONS
-    // Step 1: Get active user IDs (exclude deleted users)
-    const activeUserIds = await getActiveUserIds();
-
-    if (process.env.NODE_ENV !== 'production') {
-      debugLog('   🔍 Active customer users:', activeUserIds.length);
-    }
-
-    // Step 2: Get subscriptions for active users only
-    const activeSubscriptions = await Subscription.find({
-      user: { $in: activeUserIds },
-      status: 'active',
-      startDate: { $lte: deliveryDate },
-      endDate: { $gte: deliveryDate }
-    }).populate('user');
-
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('   📋 Active subscriptions:', activeSubscriptions.length);
-    }
-
-    // Determine which meal types to check
-    const mealTypes = mealType ? [mealType] : ['lunch', 'dinner'];
-    
-    let createdCount = 0;
-    let skippedCount = 0;
-
-    // ========================================
-    // IDEMPOTENT UPSERT PATTERN
-    // ========================================
-    // Uses findOneAndUpdate with upsert: true
-    // If document exists: does nothing ($setOnInsert won't run)
-    // If not exists: creates it
-    // Thread-safe, no duplicates (protected by unique index)
-    if (process.env.NODE_ENV !== 'production') {
-      debugLog(`\n🔄 Processing ${activeSubscriptions.length} subscriptions × ${mealTypes.length} meal types...`);
-    }
-
-    for (const subscription of activeSubscriptions) {
-      for (const type of mealTypes) {
-        // ========================================
-        // SKIP AUTO-ASSIGN DEFAULT MEALS (CRON)
-        // ========================================
-        // BUG 3 FIX: Include 'both' for backward compatibility with old data
-        const { start: skipStart, end: skipEnd } = getISTDayRange(deliveryDate);
-        const skipExists = await MealSkip.findOne({
-          user: subscription.user._id,
-          deliveryDate: { $gte: skipStart, $lte: skipEnd },
-          mealType: { $in: [type, 'both'] }
-        });
-
-        if (skipExists) {
-          if (process.env.NODE_ENV !== 'production') {
-            console.log(`⏭️ Skipped default assignment for ${subscription.user.name} - ${type}`);
-          }
-          continue;
-        }
-
-        const defaultMeal = getDefaultMealForSubscription(subscription, deliveryDate, type);
-
-        // ========================================
-        // UNIFIED CUTOFF TIME (BOTH MEALS)
-        // ========================================
-        // ✅ Use helper function for consistency
-        const cutoffTime = getCutoffTimeForDate(deliveryDate);
-
-        // ========================================
-        // CRITICAL: UPSERT (not create/insertMany)
-        // ========================================
-        // This ONLY inserts if document doesn't exist
-        // Multiple calls = safe, no duplicates
-        try {
-          const result = await MealOrder.findOneAndUpdate(
-            {
-              user: subscription.user._id,
-              deliveryDate: deliveryDate,
-              mealType: type
-            },
-            {
-              $setOnInsert: {
-                subscription: subscription._id,
-                orderSource: 'subscription', // ✅ FIX 1: Add orderSource for kitchen filtering
-                orderDate: nowIST().toDate(),
-                selectedMeal: {
-                  name: defaultMeal,
-                  items: [],
-                  isDefault: true
-                },
-                cutoffTime: cutoffTime.toDate(),
-                isAfterCutoff: false,
-                status: 'confirmed',
-                createdBy: 'system-kitchen'
-              }
-            },
-            {
-              upsert: true,
-              new: false, // Return old doc to detect if created
-              setDefaultsOnInsert: true
-            }
-          );
-          
-          // If result is null, document was created
-          // If result exists, document already existed
-          if (!result) {
-            createdCount++;
-            console.log(`   ✅ Created: ${subscription.user.name} - ${type} - ${defaultMeal}`);
-          } else {
-            skippedCount++;
-            console.log(`   ℹ️  Exists: ${subscription.user.name} - ${type} (OK)`);
-          }
-        } catch (error) {
-          // Duplicate key error from unique index - should never happen with upsert
-          if (error.code === 11000) {
-            skippedCount++;
-            console.log(`   ⚠️  Duplicate prevented: ${subscription.user.name} - ${type}`);
-          } else {
-            console.error(`   ❌ Error: ${subscription.user.name} - ${type}:`, error.message);
-            throw error;
-          }
-        }
-      }
-    }
-
-    if (process.env.NODE_ENV !== 'production') {
-      debugLog(`\n📊 Summary:`);
-      debugLog(`   ✅ Created: ${createdCount} new meals`);
-      debugLog(`   ℹ️  Skipped: ${skippedCount} existing meals`);
-      debugLog(`   📈 Total: ${createdCount + skippedCount} meals ensured`);
-      debugLog('   ✅ Kitchen readiness check complete (idempotent)');
-    }
-    
-    // ========================================
-    // VALIDATION: Ensure no duplicates
-    // ========================================
-    const totalMeals = await MealOrder.countDocuments({
-      deliveryDate: deliveryDate,
-      mealType: mealType ? { $in: [mealType] } : { $in: ['lunch', 'dinner'] }
-    });
-    const expectedMax = activeSubscriptions.length * mealTypes.length;
-    
-    console.log(`\n🔍 Duplicate Check:`);
-    console.log(`   - Meals in DB: ${totalMeals}`);
-    console.log(`   - Max Expected: ${expectedMax} (${activeSubscriptions.length} users × ${mealTypes.length} types)`);
-    
-    if (totalMeals > expectedMax) {
-      console.error(`   ❌ CRITICAL: Duplicate meals detected! (${totalMeals} > ${expectedMax})`);
-    } else {
-      console.log(`   ✅ No duplicates detected`);
-    }
-    
-    return createdCount;
-  } catch (error) {
-    console.error('❌ Error ensuring default meals:', error);
-    throw error;
-  }
-};
-
-// Helper function to get default meal based on subscription plan and day
-const getDefaultMealForSubscription = (subscription, deliveryDate, mealType) => {
-  const dayOfWeek = moment(deliveryDate).day();
-  const planType = subscription.planType || 'classic';
-  
-  // ✅ VERIFICATION: Day-wise meal assignment
-  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  console.log(`📅 [MEAL ASSIGNMENT] Date: ${moment(deliveryDate).format('YYYY-MM-DD')}, Day: ${dayNames[dayOfWeek]}, Type: ${mealType}, Plan: ${planType}`);
-
-  const mealsByDay = {
-    'premium-veg': {
-      lunch: [
-        'MIX-VEG, DAL, JEERA RICE, ROTI & SALAD', // Sunday
-        'AALOO SOYABEEN, DAL, FRIED RICE, ROTI & KHEER', // Monday
-        'RAJMA, AALOO BHUJIYA, JEERA RICE, ROTI & RAITA', // Tuesday
-        'MUTAR MUSHROOM, DAL, SOYA RICE, ROTI & SALAD', // Wednesday
-        'VEGITABLE, DAL, RICE, ROTI & SALAD', // Thursday
-        'PANEER MASALA, PLAIN PARATHA & HALWA', // Friday
-        'KHICHDI, AALOO CHOKHA / PICKLE' // Saturday
-      ],
-      dinner: [
-        'VEG BIRYANI, SALAD & RAITA', // Sunday
-        'SEASONAL VEG, DAL, RICE, ROTI & SALAD', // Monday
-        'KADAI PANEER, LACHHA PARATHA & SALAD', // Tuesday
-        'DAL FRY, ROTI & KHEER', // Wednesday
-        'MIX-VEG, DAL, FRIED RICE, ROTI & SALAD', // Thursday
-        'BESAN GATTA, JEERA RICE, ROTI & SALAD', // Friday
-        'CHHOLE MASALA, PURI & SWEETS' // Saturday
-      ]
-    },
-    'premium-non-veg': {
-      lunch: [
-        'CHICKEN CURRY (BIHARI STYLE), JEERA RICE, ROTI & SALAD', // Sunday
-        'EGG CURRY, FRIED RICE, ROTI & KHEER', // Monday
-        'N/A', // Tuesday
-        'CHICKEN MASALA, DAL, SOYA RICE, ROTI & SALAD', // Wednesday
-        'EGG AALOO DUM, RICE, ROTI & SALAD', // Thursday
-        'HYDRABADI BIRYANI, RAITA & HALWA', // Friday
-        'KEEMA, DAL, RICE, ROTI & SALAD' // Saturday
-      ],
-      dinner: [
-        'CHICKEN BIRYANI, RAITA & SALAD', // Sunday
-        'TANDOORI CHICKEN, PARATHA (PLAIN) & HALWA', // Monday
-        'N/A', // Tuesday
-        'MURADABADI BIRYANI, CHUTNEY & KHEER', // Wednesday
-        'CHICKEN KORMA, LACHHA PARATHA & SALAD', // Thursday
-        'EGG BHURJI, DAL, JEERA RICE, ROTI & SALAD', // Friday
-        'BUTTER CHICKEN, SATTU PARATHA, SWEETS' // Saturday
-      ]
-    },
-    'classic': {
-      lunch: [
-        'MIX-VEG, DAL, RICE & SALAD', // Sunday
-        'AALOO SOYABEEN, RICE & SALAD', // Monday
-        'RAJMA, RICE & RAITA', // Tuesday
-        'CHICKEN CURRY, RICE & SALAD', // Wednesday
-        'VEGITABLE, RICE & SALAD', // Thursday
-        'CHHOLE MASALA, RICE & SALAD', // Friday
-        'KHICHDI, AALOO CHOKHA / PICKLE' // Saturday
-      ],
-      dinner: [
-        'CHICKEN BIRYANI, SALAD & RAITA', // Sunday
-        'SEASONAL VEG, ROTI & SALAD', // Monday
-        'KADAI PANEER, ROTI & HALWA', // Tuesday
-        'DAL FRY, ROTI & SALAD', // Wednesday
-        'MIX-VEG, ROTI & SALAD', // Thursday
-        'EGG CURRY, ROTI & SALAD', // Friday
-        'CHHOLE MASALA, PURI & SWEETS' // Saturday
-      ]
-    }
-  };
-
-  // Default to classic if plan type not found
-  const plan = mealsByDay[planType] || mealsByDay['classic'];
-  const meals = plan[mealType] || plan['lunch'];
-  const selectedMeal = meals[dayOfWeek] || 'Dal Rice';
-  
-  console.log(`✅ [MEAL SELECTED] ${selectedMeal}`);
-  
-  return selectedMeal;
-};
 
 // @desc    Select meal for specific date
 // @route   POST /api/meals/select
@@ -698,7 +449,7 @@ exports.selectMeal = async (req, res) => {
     // ========================================
     // 4️⃣ CHECK FOR EXISTING MEAL ORDERS - REJECT IF EXISTS
     // ========================================
-    // Check for existing lunch order - reject if exists (unless skipped)
+    // Check for existing lunch order - reject if exists
     const { start, end } = getISTDayRange(deliveryDate);
     if (lunch) {
       const existingLunch = await MealOrder.findOne({
@@ -706,7 +457,7 @@ exports.selectMeal = async (req, res) => {
         deliveryDate: { $gte: start, $lte: end },
         mealType: 'lunch'
       });
-      if (existingLunch && existingLunch.status !== 'skipped') {
+      if (existingLunch) {
         return res.status(409).json({
           success: false,
           message: 'Lunch meal already selected for this date'
@@ -714,14 +465,14 @@ exports.selectMeal = async (req, res) => {
       }
     }
 
-    // Check for existing dinner order - reject if exists (unless skipped)
+    // Check for existing dinner order - reject if exists
     if (dinner) {
       const existingDinner = await MealOrder.findOne({
         user: req.user._id,
         deliveryDate: { $gte: start, $lte: end },
         mealType: 'dinner'
       });
-      if (existingDinner && existingDinner.status !== 'skipped') {
+      if (existingDinner) {
         return res.status(409).json({
           success: false,
           message: 'Dinner meal already selected for this date'
