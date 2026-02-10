@@ -10,14 +10,6 @@ const mealOrderSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Subscription'
   },
-  delivery: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Delivery'
-  },
-  orderDate: {
-    type: Date,
-    required: true
-  },
   deliveryDate: {
     type: Date,
     required: true
@@ -28,40 +20,18 @@ const mealOrderSchema = new mongoose.Schema({
     required: true
   },
   selectedMeal: {
-    name: String,
-    items: [String],
-    isDefault: {
-      type: Boolean,
-      default: false
-    }
-  },
-  instructions: {
     type: String,
-    maxlength: 200,
-    trim: true
+    default: null  // null = skipped
   },
-  cutoffTime: {
-    type: Date,
-    required: true
-  },
-  isAfterCutoff: {
+  skipped: {
     type: Boolean,
     default: false
-  },
-  status: {
-    type: String,
-    enum: ['pending_payment', 'pending', 'confirmed', 'preparing', 'out_for_delivery', 'delivered', 'cancelled'],
-    default: 'pending'
   },
   orderSource: {
     type: String,
     enum: ['subscription', 'daily'],
     default: 'subscription',
     index: true
-  },
-  price: {
-    type: Number,
-    default: 0
   },
   paymentId: {
     type: mongoose.Schema.Types.ObjectId,

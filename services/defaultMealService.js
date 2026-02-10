@@ -1,4 +1,5 @@
 const MealOrder = require('../models/MealOrder');
+const RestaurantStatus = require('../models/RestaurantStatus');
 const Subscription = require('../models/Subscription');
 const { getActiveUserIds } = require('../utils/activeUserHelper');
 const socketService = require('./socketService');
@@ -19,7 +20,14 @@ async function ensureDefaultMealsForDate(deliveryDate) {
   try {
     const deliveryMoment = moment.tz(deliveryDate, 'Asia/Kolkata');
     logger.info(`\n🔧 [DEFAULT MEAL SERVICE] Ensuring defaults for ${deliveryMoment.format('YYYY-MM-DD')}`);
-    
+
+    // BEFORE assigning default meals: check restaurant status
+    const status = await RestaurantStatus.findOne();
+    if (!status?.isOpen) {
+      logger.info('   🔥 Restaurant is closed - skipping auto-assign');
+      return { createdCount: 0, skippedCount: 0 };
+    }
+
     // Get active users with active subscriptions
     const activeUserIds = await getActiveUserIds();
     
