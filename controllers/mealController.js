@@ -1860,11 +1860,19 @@ exports.getMyMealSelection = async (req, res) => {
     const lunchLocked = isLocked || lunchSkipped;
     const dinnerLocked = isLocked || dinnerSkipped;
 
+    // ========================================
+    // SELECTION COMPLETED FLAG
+    // ========================================
+    const hasLunchOrder = !!lunchMeal || lunchSkipped;
+    const hasDinnerOrder = !!dinnerMeal || dinnerSkipped;
+    const selectionCompleted = hasLunchOrder && hasDinnerOrder;
+
     if (process.env.NODE_ENV !== 'production') {
       console.log('🔒 FINAL LOCK STATUS:');
       console.log(`   Unified Lock: ${isLocked}`);
       console.log(`   lunchLocked = ${lunchLocked}`);
       console.log(`   dinnerLocked = ${dinnerLocked}`);
+      console.log(`   selectionCompleted = ${selectionCompleted}`);
     }
 
     // Get default meals
@@ -1924,6 +1932,8 @@ exports.getMyMealSelection = async (req, res) => {
 
         lunchSkipped,
         dinnerSkipped,
+
+        selectionCompleted,
 
         cutoffTime: cutoffTime.toISOString(),
         serverTime: now.toISOString(),
