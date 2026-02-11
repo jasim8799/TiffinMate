@@ -20,12 +20,16 @@ const mealOrderSchema = new mongoose.Schema({
     required: true
   },
   selectedMeal: {
-    type: String,
-    default: null  // null = skipped
+    name: { type: String },
+    items: [{ type: String }],
+    isSkip: { type: Boolean, default: false },
+    isDefault: { type: Boolean, default: false }
   },
-  skipped: {
-    type: Boolean,
-    default: false
+  status: {
+    type: String,
+    enum: ['pending', 'confirmed', 'cancelled'],
+    default: 'confirmed',
+    index: true
   },
   orderSource: {
     type: String,
