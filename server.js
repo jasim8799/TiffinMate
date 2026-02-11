@@ -101,13 +101,9 @@ const routesToLoad = [
 ];
 
 routesToLoad.forEach(({ path, file }) => {
-  try {
-    const route = require(`./routes/${file}`);
-    app.use(path, route);
-    console.log(`✅ ${file} loaded`);
-  } catch (error) {
-    console.warn(`⚠️ Failed to load ${file}:`, error.message);
-  }
+  const route = require(`./routes/${file}`); // 🔥 DO NOT swallow errors
+  app.use(path, route);
+  console.log(`✅ ${file} loaded`);
 });
 
 // Load admin routes with improved logging
