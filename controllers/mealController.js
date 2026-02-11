@@ -912,7 +912,7 @@ exports.getMyDailyMealSelection = (req, res) => {
 // @access  Private (Customer)
 exports.skipMeal = async (req, res) => {
   try {
-    const { deliveryDate, mealType, reason } = req.body;
+    const { mealType, deliveryDate } = req.body;
     const userId = req.user._id;
 
     // ==============================
@@ -965,7 +965,6 @@ exports.skipMeal = async (req, res) => {
     // ==============================
     // 3. CREATE SKIP MealOrder RECORDS (UPSERT - ALLOW OVERWRITE)
     // ==============================
-    const cutoffTime = getCutoffTimeForDate(parsedDate.toDate());
     const skipOrders = [];
     const mealTypes = mealType === 'both' ? ['lunch', 'dinner'] : [mealType];
 
@@ -986,7 +985,7 @@ exports.skipMeal = async (req, res) => {
           },
           orderSource: 'subscription',
           orderDate: nowIST().toDate(),
-          cutoffTime: cutoffTime.toDate(),
+          cutoffTime: getCutoffTimeForDate(parsedDate.toDate()).toDate(),
           isAfterCutoff: false,
           status: 'confirmed'
         },
@@ -994,8 +993,6 @@ exports.skipMeal = async (req, res) => {
       );
       skipOrders.push(skipOrder);
     }
-
-
 
     // ==============================
     // 6. SUCCESS
