@@ -986,7 +986,7 @@ exports.skipMeal = async (req, res) => {
           orderSource: 'subscription',
           orderDate: nowIST().toDate(),
           cutoffTime: getCutoffTimeForDate(parsedDate.toDate()).toDate(),
-          isAfterCutoff: false,
+          isAfterCutoff: nowIST().isAfter(getCutoffTimeForDate(parsedDate.toDate())),
           status: 'confirmed'
         },
         { upsert: true, new: true }
@@ -1397,8 +1397,8 @@ exports.getMyMealSelection = async (req, res) => {
           dinnerLocked: isLocked,
           hasPendingPayment,  // ✅ Embedded in response instead of blocking
           hasCompletedPayment,  // ✅ Tells frontend if meals are confirmed
-          lunch: lunchMeal,
-          dinner: dinnerMeal,
+        lunchOrder: lunchMeal,
+        dinnerOrder: dinnerMeal,
           isReadOnly: offset === -1,
           serverTime: now.toISOString(),
           serverTimeFormatted: now.format('YYYY-MM-DD HH:mm:ss') + ' IST'
@@ -1538,8 +1538,8 @@ exports.getMyMealSelection = async (req, res) => {
     // UNIFIED LOCK STATUS (SAME FOR BOTH)
     // ========================================
     const isLocked = now.isAfter(cutoffTime);
-    const lunchLocked = isLocked || lunchSkipped;
-    const dinnerLocked = isLocked || dinnerSkipped;
+    const lunchLocked = isLocked;
+    const dinnerLocked = isLocked;
 
     // ========================================
     // SELECTION COMPLETED FLAG
@@ -1574,7 +1574,10 @@ exports.getMyMealSelection = async (req, res) => {
     }
 
     // If no meals exist, return subscription shell (never return data: null)
-    if (!lunchMeal && !dinnerMeal) {
+    // ========================================
+    // FIX: DO NOT HIDE SKIPPED ORDERS
+    // ========================================
+    if (!hasLunchOrder && !hasDinnerOrder) {
       return res.status(200).json({
         success: true,
         data: {
@@ -1585,8 +1588,8 @@ exports.getMyMealSelection = async (req, res) => {
           isAfterCutoff: isLocked,
           lunchLocked: isLocked,
           dinnerLocked: isLocked,
-          lunch: null,
-          dinner: null,
+          lunchOrder: null,
+          dinnerOrder: null,
           lunchIsDefault: false,
           dinnerIsDefault: false
         }
@@ -1600,8 +1603,8 @@ exports.getMyMealSelection = async (req, res) => {
         subscriptionStatus: activeSubscription.status,
         nextDeliveryDate: deliveryDate.toISOString().split('T')[0],
 
-        lunch: lunchMeal,
-        dinner: dinnerMeal,
+        lunchOrder: lunchMeal,
+        dinnerOrder: dinnerMeal,
 
         lunchLocked,
         dinnerLocked,
@@ -1611,7 +1614,7 @@ exports.getMyMealSelection = async (req, res) => {
 
         selectionCompleted,
 
-        cutoffTime: cutoffTime.toISOString(),
+        cutoffTime: cutoffTime.format('HH:mm'),
         serverTime: now.toISOString(),
         serverTimeFormatted: now.format('YYYY-MM-DD HH:mm:ss') + ' IST',
 
