@@ -40,12 +40,19 @@ const mealOrderSchema = new mongoose.Schema({
   paymentId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Payment'
+  },
+  cutoffTime: {
+    type: Date
+  },
+  isAfterCutoff: {
+    type: Boolean,
+    default: false
   }
 }, {
   timestamps: true
 });
 
-// Index for efficient querying
+// Index for efficient querying (covers deliveryDate queries too)
 mealOrderSchema.index({ deliveryDate: 1, status: 1 });
 
 // ========================================
@@ -72,15 +79,7 @@ mealOrderSchema.index(
   }
 );
 
-// Chaos mode: randomly delay saves to test race conditions
-mealOrderSchema.pre('save', async function(next) {
-  if (process.env.CHAOS_MODE === 'true') {
-    const delay = Math.random() * 5000; // 0-5 seconds
-    console.log(`CHAOS_MODE: Delaying meal order save by ${delay.toFixed(0)}ms`);
-    await new Promise(resolve => setTimeout(resolve, delay));
-  }
-  next();
-});
+// Chaos mode removed - was causing production timeouts
 
 // Method to check if order is after cutoff
 mealOrderSchema.methods.checkCutoff = function() {
