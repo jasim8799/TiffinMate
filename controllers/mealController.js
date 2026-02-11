@@ -560,8 +560,12 @@ exports.selectMeal = async (req, res) => {
             subscription: subscription._id,
             orderSource: 'subscription',
             orderDate: nowIST().toDate(),
-            selectedMeal: null, // skip
-            skipped: true,
+            selectedMeal: {
+              name: 'SKIP',
+              items: [],
+              isSkip: true,
+              isDefault: false
+            },
             cutoffTime: cutoffTime.toDate(),
             isAfterCutoff: false,
             status: 'confirmed'
@@ -974,8 +978,12 @@ exports.skipMeal = async (req, res) => {
         },
         {
           subscription: subscription._id,
-          selectedMeal: null,
-          skipped: true,
+          selectedMeal: {
+            name: 'SKIP',
+            items: [],
+            isSkip: true,
+            isDefault: false
+          },
           orderSource: 'subscription',
           orderDate: nowIST().toDate(),
           cutoffTime: cutoffTime.toDate(),
@@ -1513,11 +1521,11 @@ exports.getMyMealSelection = async (req, res) => {
       if (order.mealType === 'lunch') {
         lunchMeal = order.selectedMeal;
         lunchIsDefault = order.selectedMeal?.isDefault || false;
-        lunchSkipped = order.selectedMeal == null;
+        lunchSkipped = order.selectedMeal?.isSkip === true;
       } else if (order.mealType === 'dinner') {
         dinnerMeal = order.selectedMeal;
         dinnerIsDefault = order.selectedMeal?.isDefault || false;
-        dinnerSkipped = order.selectedMeal == null;
+        dinnerSkipped = order.selectedMeal?.isSkip === true;
       }
     });
 
@@ -1999,7 +2007,7 @@ exports.getAggregatedMealOrders = async (req, res) => {
     // Filter out daily meals that don't have paid payments and skipped meals
     const filteredOrders = mealOrders.filter(order =>
       (order.orderSource === 'subscription' || order.paymentId) &&
-      !order.skipped
+      !order.selectedMeal?.isSkip
     );
 
     // If no meal orders found, return success with empty data
