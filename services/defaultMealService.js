@@ -18,6 +18,14 @@ const logger = require('../utils/logger');
  */
 async function ensureDefaultMealsForDate(deliveryDate) {
   try {
+    const RestaurantStatus = require('../models/RestaurantStatus');
+
+    const status = await RestaurantStatus.findOne();
+    if (status && status.isOpen === false) {
+      logger.info('⛔ Restaurant closed — skipping default meals');
+      return;
+    }
+
     const deliveryMoment = moment.tz(deliveryDate, 'Asia/Kolkata');
     const { start, end } = getISTDayRange(deliveryDate);
     logger.info(`\n🔧 [DEFAULT MEAL SERVICE] Ensuring defaults for ${deliveryMoment.format('YYYY-MM-DD')}`);
@@ -42,7 +50,8 @@ async function ensureDefaultMealsForDate(deliveryDate) {
       const hasLunch = await MealOrder.exists({
         user: subscription.user._id,
         deliveryDate: deliveryDate,
-        mealType: 'lunch'
+        mealType: 'lunch',
+        'selectedMeal.isSkip': { $ne: true }
       });
 
       if (!hasLunch) {
@@ -94,7 +103,8 @@ async function ensureDefaultMealsForDate(deliveryDate) {
       const hasDinner = await MealOrder.exists({
         user: subscription.user._id,
         deliveryDate: deliveryDate,
-        mealType: 'dinner'
+        mealType: 'dinner',
+        'selectedMeal.isSkip': { $ne: true }
       });
 
       if (!hasDinner) {

@@ -276,6 +276,16 @@ const processPremiumMealSelection = (meal, dietaryPreference) => {
 // @access  Private (Customer)
 exports.selectMeal = async (req, res) => {
   try {
+    // ========== RESTAURANT CLOSE CHECK ==========
+    const RestaurantStatus = require('../models/RestaurantStatus');
+    const status = await RestaurantStatus.findOne();
+    if (status && status.isOpen === false) {
+      return res.status(403).json({
+        success: false,
+        message: 'Restaurant is closed for tomorrow'
+      });
+    }
+
     // ========== USE SUBSCRIPTION FROM MIDDLEWARE ==========
     const subscription = req.subscription; // Already validated by requireActiveSubscription middleware
 
@@ -547,37 +557,48 @@ exports.selectMeal = async (req, res) => {
     // HANDLE SKIP BOTH (no meals selected)
     // ==============================
     if (!processedLunch && !processedDinner) {
-      const mealTypes = ['lunch', 'dinner'];
+      const session = await mongoose.startSession();
+      session.startTransaction();
 
-      for (const mt of mealTypes) {
-        await MealOrder.findOneAndUpdate(
-          {
-            user: req.user._id,
-            deliveryDate: deliveryMoment.toDate(),
-            mealType: mt
-          },
-          {
-            subscription: subscription._id,
-            orderSource: 'subscription',
-            orderDate: nowIST().toDate(),
-            selectedMeal: {
-              name: 'SKIP',
-              items: [],
-              isSkip: true,
-              isDefault: false
+      try {
+        for (const mt of ['lunch', 'dinner']) {
+          await MealOrder.findOneAndUpdate(
+            {
+              user: req.user._id,
+              deliveryDate: deliveryMoment.toDate(),
+              mealType: mt
             },
-            cutoffTime: cutoffTime.toDate(),
-            isAfterCutoff: false,
-            status: 'confirmed'
-          },
-          { upsert: true }
-        );
-      }
+            {
+              subscription: subscription._id,
+              orderSource: 'subscription',
+              orderDate: nowIST().toDate(),
+              selectedMeal: {
+                name: 'SKIP',
+                items: [],
+                isSkip: true,
+                isDefault: false
+              },
+              cutoffTime: cutoffTime.toDate(),
+              isAfterCutoff: false,
+              status: 'confirmed'
+            },
+            { upsert: true, session }
+          );
+        }
 
-      return res.status(200).json({
-        success: true,
-        message: 'Meals skipped successfully'
-      });
+        await session.commitTransaction();
+        session.endSession();
+
+        return res.status(200).json({
+          success: true,
+          message: 'Meals skipped successfully'
+        });
+
+      } catch (err) {
+        await session.abortTransaction();
+        session.endSession();
+        throw err;
+      }
     }
 
     // ========================================
@@ -751,6 +772,16 @@ exports.selectMeal = async (req, res) => {
 // @access  Private (Customer)
 exports.selectDailyMeal = async (req, res) => {
   try {
+    // ========== RESTAURANT CLOSE CHECK ==========
+    const RestaurantStatus = require('../models/RestaurantStatus');
+    const status = await RestaurantStatus.findOne();
+    if (status && status.isOpen === false) {
+      return res.status(403).json({
+        success: false,
+        message: 'Restaurant is closed for tomorrow'
+      });
+    }
+
     const { mealType, lunch, dinner } = req.body;
     const user = req.user;
 
@@ -913,102 +944,53 @@ exports.getMyDailyMealSelection = (req, res) => {
 exports.skipMeal = async (req, res) => {
   try {
     const { mealType, deliveryDate } = req.body;
-    const userId = req.user._id;
 
-    // ==============================
-    // 1. VALIDATION
-    // ==============================
-    if (!deliveryDate || typeof deliveryDate !== 'string') {
+    if (!mealType || !deliveryDate) {
       return res.status(400).json({
         success: false,
-        message: 'deliveryDate is required (YYYY-MM-DD)',
+        message: 'mealType and deliveryDate required'
       });
     }
 
-    if (!['lunch', 'dinner', 'both'].includes(mealType)) {
-      return res.status(400).json({
-        success: false,
-        message: 'mealType must be lunch, dinner, or both',
-      });
-    }
+    const deliveryMoment = moment.tz(deliveryDate, 'Asia/Kolkata').startOf('day');
+    const cutoffTime = getCutoffTimeForDate(deliveryMoment.toDate());
 
-    const parsedDate = toIST(deliveryDate).startOf('day');
-
-    if (!parsedDate.isValid()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid deliveryDate format',
-      });
-    }
-
-    // ❗ Block past dates (important)
-    const today = nowIST().startOf('day');
-    if (parsedDate.isBefore(today)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Cannot skip past meals',
-      });
-    }
-
-    // ==============================
-    // 2. ACTIVE SUBSCRIPTION (reuse from middleware)
-    // ==============================
-    const subscription = req.subscription; // Already validated by requireActiveSubscription middleware
-
-    if (!subscription) {
+    // 🚨 Block skip after cutoff
+    if (nowIST().isAfter(cutoffTime)) {
       return res.status(403).json({
         success: false,
-        message: 'Active subscription required to skip meals',
+        message: 'Cutoff passed. Cannot skip meal.'
       });
     }
 
-    // ==============================
-    // 3. CREATE SKIP MealOrder RECORDS (UPSERT - ALLOW OVERWRITE)
-    // ==============================
-    const skipOrders = [];
-    const mealTypes = mealType === 'both' ? ['lunch', 'dinner'] : [mealType];
+    const order = await MealOrder.findOneAndUpdate(
+      {
+        user: req.user._id,
+        deliveryDate: deliveryMoment.toDate(),
+        mealType
+      },
+      {
+        subscription: req.subscription._id,
+        orderSource: 'subscription',
+        orderDate: nowIST().toDate(),
+        cutoffTime: cutoffTime.toDate(),
+        isAfterCutoff: false,
+        status: 'confirmed',
+        selectedMeal: {
+          name: 'SKIPPED',
+          items: [],
+          isSkip: true,
+          isDefault: false
+        }
+      },
+      { upsert: true, new: true }
+    );
 
-    for (const mt of mealTypes) {
-      const skipOrder = await MealOrder.findOneAndUpdate(
-        {
-          user: userId,
-          deliveryDate: parsedDate.toDate(),
-          mealType: mt
-        },
-        {
-          subscription: subscription._id,
-          selectedMeal: {
-            name: 'SKIP',
-            items: [],
-            isSkip: true,
-            isDefault: false
-          },
-          orderSource: 'subscription',
-          orderDate: nowIST().toDate(),
-          cutoffTime: getCutoffTimeForDate(parsedDate.toDate()).toDate(),
-          isAfterCutoff: nowIST().isAfter(getCutoffTimeForDate(parsedDate.toDate())),
-          status: 'confirmed'
-        },
-        { upsert: true, new: true }
-      );
-      skipOrders.push(skipOrder);
-    }
+    res.json({ success: true, data: order });
 
-    // ==============================
-    // 6. SUCCESS
-    // ==============================
-    return res.json({
-      success: true,
-      message: 'Meal skipped successfully',
-      data: skipOrders,
-    });
-  } catch (error) {
-    console.error('Skip meal error:', error);
-
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to skip meal',
-    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false });
   }
 };
 

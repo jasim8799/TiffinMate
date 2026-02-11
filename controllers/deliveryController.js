@@ -17,6 +17,23 @@ exports.createDelivery = async (req, res) => {
   try {
     const { userId, subscriptionId, deliveryDate, mealType, meals } = req.body;
 
+    // ✅ NORMALIZE DATE: Always use IST start of day for consistency
+    const normalizedDate = moment(deliveryDate).tz('Asia/Kolkata').startOf('day').toDate();
+
+    // ✅ GUARD: Prevent creating delivery for skipped meals
+    const skippedMealOrder = await MealOrder.findOne({
+      user: userId,
+      deliveryDate: normalizedDate,
+      'selectedMeal.isSkip': true
+    });
+
+    if (skippedMealOrder) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot create delivery for skipped meal'
+      });
+    }
+
     const subscription = await Subscription.findById(subscriptionId);
     if (!subscription || subscription.status !== 'active') {
       return res.status(400).json({
@@ -27,11 +44,11 @@ exports.createDelivery = async (req, res) => {
 
     // Use upsert: update if exists, insert if not
     const delivery = await Delivery.findOneAndUpdate(
-      { user: userId, deliveryDate: new Date(deliveryDate) },
+      { user: userId, deliveryDate: normalizedDate },
       {
         user: userId,
         subscription: subscriptionId,
-        deliveryDate,
+        deliveryDate: normalizedDate,
         mealType,
         meals,
         status: 'preparing'
@@ -128,8 +145,8 @@ exports.updateDeliveryStatus = async (req, res) => {
 // @access  Private (Owner, Delivery)
 exports.getTodaysDeliveries = async (req, res) => {
   try {
-    const today = moment().startOf('day').toDate();
-    const tomorrow = moment().add(1, 'day').startOf('day').toDate();
+    const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
+    const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
 
     // Get active users only
     const activeUserIds = await User.find({ 
@@ -234,8 +251,8 @@ exports.getMyDeliveries = async (req, res) => {
 // @access  Private (Customer)
 exports.getMyTodayDelivery = async (req, res) => {
   try {
-    const today = moment().startOf('day').toDate();
-    const tomorrow = moment().add(1, 'day').startOf('day').toDate();
+    const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
+    const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
 // ✅ USE MEALORDER AS SOURCE OF TRUTH (consistent with markSelectedOutForDelivery)
     const mealOrders = await MealOrder.find({
       user: req.user._id,
@@ -307,7 +324,7 @@ exports.getKitchenSummary = async (req, res) => {
     
     // KITCHEN-CENTRIC: Always use the next orderable delivery moment
     // This ensures kitchen always sees the correct date for preparation
-    targetDate = getNextOrderableDeliveryMoment();
+    const targetDate = getNextOrderableDeliveryMoment();
     console.log('🍽️ [KITCHEN SUMMARY] Using next orderable delivery date:', targetDate.format('YYYY-MM-DD'));
     
     const startOfDay = targetDate.startOf('day').toDate();
@@ -409,8 +426,18 @@ exports.getDelivery = async (req, res) => {
 // @access  Private (Owner only)
 exports.autoCreateTodaysDeliveries = async (req, res) => {
   try {
-    const today = moment().startOf('day').toDate();
-    const tomorrow = moment().add(1, 'day').startOf('day').toDate();
+    const RestaurantStatus = require('../models/RestaurantStatus');
+
+    const status = await RestaurantStatus.findOne();
+    if (status && status.isOpen === false) {
+      return res.json({
+        success: true,
+        message: 'Restaurant closed — no deliveries created'
+      });
+    }
+
+    const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
+    const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
 
     // ✅ CRITICAL: Get ONLY active users (exclude deleted/deactivated)
     const activeUserIds = await getActiveUserIds();
@@ -419,7 +446,8 @@ exports.autoCreateTodaysDeliveries = async (req, res) => {
     const mealOrders = await MealOrder.find({
       deliveryDate: { $gte: today, $lt: tomorrow },
       status: 'confirmed',
-      user: { $in: activeUserIds }
+      user: { $in: activeUserIds },
+      'selectedMeal.isSkip': { $ne: true }
     }).populate('user');
 
     // Group mealOrders by user + deliveryDate
@@ -534,8 +562,8 @@ exports.autoCreateTodaysDeliveries = async (req, res) => {
 // @access  Private (Owner only)
 exports.markAllOutForDelivery = async (req, res) => {
   try {
-    const today = moment().startOf('day').toDate();
-    const tomorrow = moment().add(1, 'day').startOf('day').toDate();
+    const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
+    const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
 
     // Get active users only
     const activeUserIds = await User.find({ 
@@ -563,15 +591,17 @@ exports.markAllOutForDelivery = async (req, res) => {
 
     // Update all deliveries to out-for-delivery
     const updatePromises = deliveries.map(async (delivery) => {
+      const previousStatus = delivery.status;
+
       delivery.status = 'on-the-way';
       delivery.deliveryStatus = 'OUT_FOR_DELIVERY';
       delivery.outForDeliveryTime = new Date();
       await delivery.save();
 
       await delivery.populate('user');
-      // Guard: if delivery.status already 'on-the-way', skip notifyDeliveryStatus
-      if (delivery.status !== 'on-the-way') {
-        await notifyDeliveryStatus(delivery, delivery.status);
+      // Guard: if delivery was already 'on-the-way', skip notifyDeliveryStatus
+      if (previousStatus !== 'on-the-way') {
+        await notifyDeliveryStatus(delivery, 'on-the-way');
       }
 
       return delivery;
@@ -601,8 +631,8 @@ exports.markAllOutForDelivery = async (req, res) => {
 // ✅ GET TODAY'S USERS FOR SELECTIVE DELIVERY
 exports.getTodayUsers = async (req, res) => {
   try {
-    const today = moment().startOf('day').toDate();
-    const tomorrow = moment().add(1, 'day').startOf('day').toDate();
+    const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
+    const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
 
     // Get active users only (non-deleted)
     const activeUserIds = await User.find({ 
@@ -616,14 +646,16 @@ exports.getTodayUsers = async (req, res) => {
     const mealOrders = await MealOrder.find({
       deliveryDate: { $gte: today, $lt: tomorrow },
       user: { $in: activeUserIds },
-      status: { $in: ['pending', 'confirmed'] } // Ready but not yet out for delivery
+      status: { $in: ['pending', 'confirmed'] }, // Ready but not yet out for delivery
+      'selectedMeal.isSkip': { $ne: true } // Exclude skipped meals
     })
+    .select('user mealType')
     .populate('user', 'name mobile address')
     .lean();
 
     // Group by user and aggregate meals
     const userMap = new Map();
-    
+
     mealOrders.forEach(order => {
       // ✅ CRITICAL: Ensure user is populated, skip if not
       if (!order.user || !order.user._id) {
@@ -685,15 +717,16 @@ exports.markSelectedOutForDelivery = async (req, res) => {
       });
     }
 
-    const today = moment().startOf('day').toDate();
-    const tomorrow = moment().add(1, 'day').startOf('day').toDate();
+    const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
+    const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
 
     // ✅ USE MEALORDER AS SOURCE OF TRUTH
     // Find today's meal orders for selected users ONLY
     const mealOrders = await MealOrder.find({
       deliveryDate: { $gte: today, $lt: tomorrow },
       user: { $in: userIds },  // ✅ ONLY selected users
-      status: { $in: ['pending', 'confirmed'] }
+      status: { $in: ['pending', 'confirmed'] },
+      'selectedMeal.isSkip': { $ne: true } // 🚨 EXCLUDE SKIPPED MEALS
     }).populate('user', 'name mobile');
 
     console.log(`Found ${mealOrders.length} meal orders for ${userIds.length} selected users`);
