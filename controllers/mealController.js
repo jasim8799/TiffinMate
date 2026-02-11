@@ -943,16 +943,27 @@ exports.getMyDailyMealSelection = (req, res) => {
 // @access  Private (Customer)
 exports.skipMeal = async (req, res) => {
   try {
-    const { mealType, deliveryDate } = req.body;
-
-    if (!mealType || !deliveryDate) {
-      return res.status(400).json({
+    // ========== RESTAURANT CLOSE CHECK ==========
+    const RestaurantStatus = require('../models/RestaurantStatus');
+    const status = await RestaurantStatus.findOne();
+    if (status && status.isOpen === false) {
+      return res.status(403).json({
         success: false,
-        message: 'mealType and deliveryDate required'
+        message: 'Restaurant is closed for tomorrow'
       });
     }
 
-    const deliveryMoment = moment.tz(deliveryDate, 'Asia/Kolkata').startOf('day');
+    const { mealType } = req.body;
+
+    if (!mealType) {
+      return res.status(400).json({
+        success: false,
+        message: 'mealType required'
+      });
+    }
+
+    // 🔥 ALWAYS backend decides delivery date (same as selectMeal)
+    const deliveryMoment = getNextOrderableDeliveryMoment();
     const cutoffTime = getCutoffTimeForDate(deliveryMoment.toDate());
 
     // 🚨 Block skip after cutoff
