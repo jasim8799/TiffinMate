@@ -50,8 +50,7 @@ async function ensureDefaultMealsForDate(deliveryDate) {
       const hasLunch = await MealOrder.exists({
         user: subscription.user._id,
         deliveryDate: deliveryDate,
-        mealType: 'lunch',
-        'selectedMeal.isSkip': { $ne: true }
+        mealType: 'lunch'
       });
 
       if (!hasLunch) {
@@ -103,8 +102,7 @@ async function ensureDefaultMealsForDate(deliveryDate) {
       const hasDinner = await MealOrder.exists({
         user: subscription.user._id,
         deliveryDate: deliveryDate,
-        mealType: 'dinner',
-        'selectedMeal.isSkip': { $ne: true }
+        mealType: 'dinner'
       });
 
       if (!hasDinner) {

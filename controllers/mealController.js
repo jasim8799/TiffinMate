@@ -51,6 +51,14 @@ const validateVegNonVegSingleMeal = (meal) => {
 };
 
 // Shared validation functions (defined once at top level)
+const isValidMeal = (meal) => {
+  if (!meal) return true;
+  if (meal.isSkip === true) return true;
+  if (meal.name) return true;
+  if (Array.isArray(meal.items) && meal.items.length > 0) return true;
+  return false;
+};
+
 const validateBiryaniRule = (meal) => {
   if (!meal || !meal.items) return;
   const items = meal.items;
@@ -336,40 +344,19 @@ exports.selectMeal = async (req, res) => {
     // STEP 6.1: NORMALIZE INPUTS (CONTROLLER GUARD)
     // ========================================
 
-    // Validate lunch items (max 4)
-    if (lunch && lunch.items) {
-      if (!Array.isArray(lunch.items) || lunch.items.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'Please select meal items for lunch'
-        });
-      }
-
-      if (lunch.items.length > 4) {
-        return res.status(400).json({
-          success: false,
-          code: 'MAX_ITEMS_EXCEEDED',
-          message: 'You can select a maximum of 4 items per meal'
-        });
-      }
+    // Validate meals using isValidMeal
+    if (!isValidMeal(lunch)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid lunch selection'
+      });
     }
 
-    // Validate dinner items (max 4)
-    if (dinner && dinner.items) {
-      if (!Array.isArray(dinner.items) || dinner.items.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'Please select meal items for dinner'
-        });
-      }
-
-      if (dinner.items.length > 4) {
-        return res.status(400).json({
-          success: false,
-          code: 'MAX_ITEMS_EXCEEDED',
-          message: 'You can select a maximum of 4 items per meal'
-        });
-      }
+    if (!isValidMeal(dinner)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid dinner selection'
+      });
     }
 
     // ========================================
