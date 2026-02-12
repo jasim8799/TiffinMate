@@ -1360,13 +1360,10 @@ exports.getMyMealSelection = async (req, res) => {
       const deliveryDate = deliveryMoment.toDate();
       const cutoffTime = getCutoffTimeForDate(deliveryDate);
       const now = nowIST();
-      // TODAY tab is always read-only and locked; TOMORROW tab respects cutoff
-      const isLocked = offset === -1 ? true : (offset === 0 && now.isAfter(cutoffTime));
 
-      // ✅ POLISH FIX 1: GET never blocks - check payment state but don't throw 409
+      /* ✅ FIRST calculate payment status */
       const { start: paymentStart, end: paymentEnd } = getISTDayRange(deliveryDate);
-      
-      // Check for pending payment (embed in response, don't block)
+
       const pendingPayment = await Payment.findOne({
         user: user._id,
         paymentFor: 'daily_meal',
@@ -1374,7 +1371,6 @@ exports.getMyMealSelection = async (req, res) => {
         deliveryDate: { $gte: paymentStart, $lte: paymentEnd }
       });
 
-      // Check for paid/verified payment (embed in response, don't block)
       const completedPayment = await Payment.findOne({
         user: user._id,
         paymentFor: 'daily_meal',
@@ -1382,8 +1378,16 @@ exports.getMyMealSelection = async (req, res) => {
         deliveryDate: { $gte: paymentStart, $lte: paymentEnd }
       });
 
-      const hasPendingPayment = !!pendingPayment;
-      const hasCompletedPayment = !!completedPayment;
+      let paymentStatus = null;
+
+      if (pendingPayment) paymentStatus = 'pending';
+      else if (completedPayment) paymentStatus = completedPayment.status; // paid or verified
+
+      /* ✅ THEN calculate lock */
+      const isLocked =
+        offset === -1
+          ? true
+          : (offset === 0 && (now.isAfter(cutoffTime) || paymentStatus === 'pending' || paymentStatus === 'paid' || paymentStatus === 'verified'));
 
       return res.status(200).json({
         success: true,
@@ -1395,8 +1399,7 @@ exports.getMyMealSelection = async (req, res) => {
           isAfterCutoff: isLocked,
           lunchLocked: isLocked,
           dinnerLocked: isLocked,
-          hasPendingPayment,  // ✅ Embedded in response instead of blocking
-          hasCompletedPayment,  // ✅ Tells frontend if meals are confirmed
+          paymentStatus, // ⭐⭐⭐ CRITICAL FIX
         lunchOrder: lunchMeal,
         dinnerOrder: dinnerMeal,
           isReadOnly: offset === -1,
