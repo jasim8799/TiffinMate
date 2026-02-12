@@ -1345,9 +1345,13 @@ exports.getMyMealSelection = async (req, res) => {
 
         mealsForDate.forEach(meal => {
           if (meal.mealType === 'lunch') {
-            lunchMeal = normalizeMeal(meal.selectedMeal);
+            lunchMeal = {
+              selectedMeal: normalizeMeal(meal.selectedMeal)
+            };
           } else if (meal.mealType === 'dinner') {
-            dinnerMeal = normalizeMeal(meal.selectedMeal);
+            dinnerMeal = {
+              selectedMeal: normalizeMeal(meal.selectedMeal)
+            };
           }
         });
       }
