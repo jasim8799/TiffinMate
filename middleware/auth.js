@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
 // Verify JWT token
+//789
 exports.protect = async (req, res, next) => {
   try {
     let token;
