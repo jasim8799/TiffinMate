@@ -29,27 +29,44 @@ const { activateOrExtendSubscription } = require('../utils/subscriptionUtils');
 
 
 
-// Helper function to create daily meal orders from payment metadata (IDEMPOTENT)
+// Helper function to normalize meal to object format
+function normalizeDailyMeal(meal) {
+  if (!meal) return null;
+
+  // already object
+  if (typeof meal === 'object') {
+    return {
+      name: meal.name || '',
+      items: Array.isArray(meal.items) ? meal.items : (meal.name ? [meal.name] : []),
+      isSkip: false,
+      isDefault: false
+    };
+  }
+
+  // string → convert to object
+  return {
+    name: meal,
+    items: [meal],
+    isSkip: false,
+    isDefault: false
+  };
+}
+
+// Helper function to create daily meal orders from payment metadata (FIXED)
 async function createDailyMealOrdersFromPayment(payment) {
   const MealOrder = require('../models/MealOrder');
   const { getISTDayRange, getCutoffTimeForDate } = require('../utils/deliveryDateHelper');
 
-  // SAFETY GUARD: Only create meals when payment is paid or verified
-  if (!['paid', 'verified'].includes(payment.status)) {
-    return;
-  }
-
-  // Guard: Ensure daily meal payment has metadata
-  if (payment.paymentFor === 'daily_meal' && !payment.metadata) {
-    throw new Error('Daily meal payment missing metadata');
-  }
+  if (!['paid', 'verified'].includes(payment.status)) return;
 
   const { lunch, dinner, pricePerMeal } = payment.metadata || {};
 
-  // Normalize deliveryDate to IST midnight (startOfDay)
   const { start } = getISTDayRange(payment.deliveryDate);
 
-  if (lunch) {
+  const normalizedLunch = normalizeDailyMeal(lunch);
+  const normalizedDinner = normalizeDailyMeal(dinner);
+
+  if (normalizedLunch) {
     await MealOrder.findOneAndUpdate(
       {
         user: payment.user,
@@ -59,7 +76,7 @@ async function createDailyMealOrdersFromPayment(payment) {
       },
       {
         $setOnInsert: {
-          selectedMeal: lunch,
+          selectedMeal: normalizedLunch,   // ✅ FIXED
           price: pricePerMeal,
           paymentId: payment._id,
           status: 'confirmed',
@@ -71,7 +88,7 @@ async function createDailyMealOrdersFromPayment(payment) {
     );
   }
 
-  if (dinner) {
+  if (normalizedDinner) {
     await MealOrder.findOneAndUpdate(
       {
         user: payment.user,
@@ -81,7 +98,7 @@ async function createDailyMealOrdersFromPayment(payment) {
       },
       {
         $setOnInsert: {
-          selectedMeal: dinner,
+          selectedMeal: normalizedDinner,  // ✅ FIXED
           price: pricePerMeal,
           paymentId: payment._id,
           status: 'confirmed',
