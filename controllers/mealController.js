@@ -1315,8 +1315,6 @@ exports.getMyMealSelection = async (req, res) => {
         
         let mealsForDate = await MealOrder.find({
           user: req.user._id,
-          orderSource: 'daily',
-          status: 'confirmed',
           deliveryDate: { $gte: start, $lte: end }
         });
 
