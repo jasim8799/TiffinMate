@@ -1096,29 +1096,27 @@ exports.requestSubscription = async (req, res) => {
     }
 
     // ===============================
-// PAYMENT VALIDATION (ADD ONLY)
-// ===============================
-if (!paymentId) {
-  return res.status(400).json({
-    success: false,
-    message: 'Payment is required before requesting subscription'
-  });
-}
+    // NEW FLOW: subscription → payment
+    // Payment will be created AFTER subscription
+    // ===============================
+    let payment = null;
 
-const payment = await Payment.findOne({
-  _id: paymentId,
-  user: req.user._id,
-  paymentFor: 'subscription',
-  status: { $in: ['paid', 'verified'] },
-  subscription: null // prevent reuse
-});
+    if (paymentId) {
+      payment = await Payment.findOne({
+        _id: paymentId,
+        user: req.user._id,
+        paymentFor: 'subscription',
+        status: { $in: ['paid', 'verified'] },
+        subscription: null
+      });
 
-if (!payment) {
-  return res.status(400).json({
-    success: false,
-    message: 'Valid verified payment not found. Please complete payment first.'
-  });
-}
+      if (!payment) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid payment'
+        });
+      }
+    }
 
     // Check if plan exists
     const plan = await SubscriptionPlan.findById(planId);
@@ -1220,10 +1218,12 @@ if (!payment) {
     });
 
     // ===============================
-    // LINK PAYMENT → SUBSCRIPTION
+    // LINK PAYMENT → SUBSCRIPTION (optional)
     // ===============================
-    payment.subscription = subscription._id;
-    await payment.save();
+    if (payment) {
+      payment.subscription = subscription._id;
+      await payment.save();
+    }
 
     // Find owner to send notification
     const owner = await User.findOne({ role: 'owner' });
