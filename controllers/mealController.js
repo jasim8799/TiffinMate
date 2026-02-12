@@ -1331,8 +1331,15 @@ exports.getMyMealSelection = async (req, res) => {
         const normalizeMeal = (m) => {
           if (!m) return null;
 
-          // already object
-          if (typeof m === 'object') return m;
+          // object from DB → sanitize types
+          if (typeof m === 'object') {
+            return {
+              name: m.name || '',
+              items: Array.isArray(m.items) ? m.items : [],
+              isSkip: m.isSkip === true,
+              isDefault: m.isDefault === true
+            };
+          }
 
           // old string format
           return {
