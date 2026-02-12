@@ -464,13 +464,13 @@ exports.selectMeal = async (req, res) => {
       // Classic users: traditional meal selection
       processedLunch = lunch ? {
         name: typeof lunch === 'string' ? lunch : lunch.name,
-        items: lunch.items || [],
+        items: lunch.items?.length ? lunch.items : [lunch.name],
         isDefault: false
       } : null;
 
       processedDinner = dinner ? {
         name: typeof dinner === 'string' ? dinner : dinner.name,
-        items: dinner.items || [],
+        items: dinner.items?.length ? dinner.items : [dinner.name],
         isDefault: false
       } : null;
     }
@@ -1328,11 +1328,26 @@ exports.getMyMealSelection = async (req, res) => {
         }
 
         // Extract lunch and dinner from the fetched meals
+        const normalizeMeal = (m) => {
+          if (!m) return null;
+
+          // already object
+          if (typeof m === 'object') return m;
+
+          // old string format
+          return {
+            name: m,
+            items: [m],
+            isSkip: false,
+            isDefault: false
+          };
+        };
+
         mealsForDate.forEach(meal => {
           if (meal.mealType === 'lunch') {
-            lunchMeal = meal.selectedMeal;
+            lunchMeal = normalizeMeal(meal.selectedMeal);
           } else if (meal.mealType === 'dinner') {
-            dinnerMeal = meal.selectedMeal;
+            dinnerMeal = normalizeMeal(meal.selectedMeal);
           }
         });
       }
