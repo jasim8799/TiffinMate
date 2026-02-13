@@ -48,8 +48,18 @@ function getDeliveryDateByOffset(offset) {
  * @returns {moment.Moment} The next orderable delivery moment in IST
  */
 function getNextOrderableDeliveryMoment() {
-  // Use offset=0 to get tomorrow's orderable date
-  return getDeliveryDateByOffset(0);
+  const now = moment.tz('Asia/Kolkata');
+  const base = now.clone().startOf('day');
+
+  const cutoff = base.clone().hour(23).minute(0).second(0);
+
+  // Before 11PM → tomorrow
+  if (now.isBefore(cutoff)) {
+    return base.clone().add(1, 'day');
+  }
+
+  // After 11PM → day after tomorrow
+  return base.clone().add(2, 'day');
 }
 
 /**
