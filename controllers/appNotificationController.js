@@ -1,5 +1,5 @@
 const AppNotification = require('../models/AppNotification');
-
+//test
 // Get all notifications (Owner only)
 exports.getAllNotifications = async (req, res) => {
   try {
