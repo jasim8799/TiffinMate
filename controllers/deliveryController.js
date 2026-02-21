@@ -846,6 +846,21 @@ exports.updateDeliveryByUser = async (req, res) => {
     await targetDelivery.updateStatus(status);
     await targetDelivery.populate('user');
 
+    // Sync delivery status into MealOrder documents (raw $set bypasses enum — non-fatal)
+    try {
+      const mealTypeFilter = targetDelivery.mealType && targetDelivery.mealType !== 'both'
+        ? { mealType: targetDelivery.mealType }
+        : {};
+      await MealOrder.collection.updateMany(
+        {
+          user:         targetDelivery.user._id,
+          deliveryDate: targetDelivery.deliveryDate,
+          ...mealTypeFilter,
+        },
+        { $set: { deliveryStatus: status } }
+      );
+    } catch (_) { /* non-fatal — delivery update already succeeded */ }
+
     // Notify user + owner via socket
     const payload = {
       deliveryId:   targetDelivery._id,

@@ -14,13 +14,15 @@ const ownerAuditLogSchema = new mongoose.Schema({
       'approve_extra',
       'verify_id',
       'reset_password',
-      'create_customer'
+      'create_customer',
+      'restaurant_toggle'
     ]
   },
   targetUserId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: false,
+    default: null
   },
   metadata: {
     type: mongoose.Schema.Types.Mixed,
@@ -38,16 +40,13 @@ ownerAuditLogSchema.index({ targetUserId: 1, createdAt: -1 });
 // Static method to create audit log
 ownerAuditLogSchema.statics.logAction = async function(ownerId, action, targetUserId, metadata = {}) {
   try {
-    const auditLog = await this.create({
-      ownerId,
-      action,
-      targetUserId,
-      metadata
-    });
-    return auditLog;
+    const doc = { ownerId, action, metadata };
+    if (targetUserId) doc.targetUserId = targetUserId;
+    return await this.create(doc);
   } catch (error) {
-    console.error('Error creating audit log:', error);
-    throw error;
+    // Non-fatal — audit log must NEVER crash business logic
+    console.error('⚠️ Audit log failed (non-fatal):', error.message);
+    return null;
   }
 };
 

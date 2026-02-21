@@ -1277,8 +1277,8 @@ exports.toggleRestaurantStatus = async (req, res) => {
     const stateLabel = isOpen ? 'OPEN' : 'CLOSED';
     console.log(`🏪 [RESTAURANT] Status changed to ${stateLabel} by ${req.user.name}`);
 
-    // Log the action
-    await OwnerAuditLog.logAction(req.user._id, 'restaurant_toggle', null, { isOpen, message });
+    // Log the action — fire-and-forget, must not block response
+    OwnerAuditLog.logAction(req.user._id, 'restaurant_toggle', null, { isOpen, message }).catch(() => {});
 
     // Broadcast to ALL connected clients (customers + owner panel)
     socketService.emitRestaurantStatusUpdated({

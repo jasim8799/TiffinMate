@@ -2519,3 +2519,85 @@ exports.getMealsCalendar = async (req, res) => {
     res.status(500).json({ success: false, message: 'Error fetching calendar data', error: error.message });
   }
 };
+
+// ============================================================
+// @desc    Owner kitchen aggregated view — flattened structure
+// @route   GET /api/meals/owner/aggregated?date=YYYY-MM-DD
+// @access  Private (Owner only)
+// Returns exactly the shape the Flutter OwnerKitchenScreen expects:
+// { totalOrders, totalLunch, totalDinner,
+//   lunchSummary:[{meal,count}], dinnerSummary:[{meal,count}],
+//   ingredientSummary:{item:count}, userMealDetails:[...] }
+// ============================================================
+const { aggregateKitchenData } = require('../services/kitchenAggregatorService');
+const { isCutoffPassed: _isCutoffPassed } = require('../utils/dateService');
+
+exports.getOwnerAggregatedKitchen = async (req, res) => {
+  try {
+    const { date } = req.query;
+
+    let targetDate;
+    if (date) {
+      const m = moment.tz(date, 'YYYY-MM-DD', 'Asia/Kolkata');
+      if (!m.isValid()) {
+        return res.status(400).json({ success: false, message: 'Invalid date. Use YYYY-MM-DD.' });
+      }
+      targetDate = m.toDate();
+    }
+    // targetDate = undefined → aggregateKitchenData defaults to today IST
+
+    // Auto-ensure default meals if after cutoff
+    if (_isCutoffPassed()) {
+      try { await ensureDefaultMealsForDate(targetDate || new Date()); } catch (_) {}
+    }
+
+    const report = await aggregateKitchenData(targetDate);
+
+    // ── Flatten lunch/dinner counts into lunchSummary / dinnerSummary ──
+    // Group userMealDetails by mealType + mealName to produce [{meal,count}] arrays
+    const lunchCounts = {};
+    const dinnerCounts = {};
+    for (const detail of report.userMealDetails) {
+      const mealName = detail.mealName || 'Unknown';
+      if (detail.mealType === 'lunch') {
+        lunchCounts[mealName] = (lunchCounts[mealName] || 0) + 1;
+      } else {
+        dinnerCounts[mealName] = (dinnerCounts[mealName] || 0) + 1;
+      }
+    }
+
+    const lunchSummary  = Object.entries(lunchCounts).map(([meal, count]) => ({ meal, count }));
+    const dinnerSummary = Object.entries(dinnerCounts).map(([meal, count]) => ({ meal, count }));
+
+    // ── Map userMealDetails to Flutter-expected shape ──
+    const userMealDetails = report.userMealDetails.map(d => ({
+      userId:      d.userId,
+      userName:    d.userName,
+      mobile:      d.mobile || '',
+      address:     d.address || '',
+      mealType:    d.mealType.charAt(0).toUpperCase() + d.mealType.slice(1), // Lunch / Dinner
+      menu:        d.mealName || '',
+      ingredients: d.items || [],
+      source:      d.isDefault ? 'DEFAULT' : (d.orderSource || 'subscription').toUpperCase(),
+      dietType:    d.dietType || 'veg',
+    }));
+
+    res.status(200).json({
+      success: true,
+      date: report.date,
+      data: {
+        totalOrders:      report.totalOrders,
+        totalLunch:       report.lunch.totalCount,
+        totalDinner:      report.dinner.totalCount,
+        lunchSummary,
+        dinnerSummary,
+        ingredientSummary: report.ingredientSummary,
+        userMealDetails,
+        paused: 0,
+      },
+    });
+  } catch (error) {
+    console.error('getOwnerAggregatedKitchen error:', error);
+    res.status(500).json({ success: false, message: 'Error fetching kitchen summary', error: error.message });
+  }
+};

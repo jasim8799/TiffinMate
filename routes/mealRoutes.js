@@ -1,9 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/auth');
+const { protect, authorize } = require('../middleware/auth');
 const requireActiveSubscription = require('../middleware/requireActiveSubscription');
 const requireRestaurantOpen = require('../middleware/requireRestaurantOpen');
 const mealController = require('../controllers/mealController');
+
+// ─── Owner kitchen aggregated view (Phase 16 / Kitchen screen) ───────────────
+// GET /api/meals/owner/aggregated?date=YYYY-MM-DD
+router.get('/owner/aggregated', protect, authorize('owner'), mealController.getOwnerAggregatedKitchen);
 
 // ─── Phase 6: Unified date-based query (used by all tabs, kitchen, dashboard) ─
 // GET /api/meals/by-date?date=YYYY-MM-DD
