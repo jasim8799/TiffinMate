@@ -11,8 +11,10 @@ const Lead = require('../models/Lead');
 const AppNotification = require('../models/AppNotification');
 const OwnerAuditLog = require('../models/OwnerAuditLog');
 const SubscriptionLock = require('../models/SubscriptionLock');
+const RestaurantStatus = require('../models/RestaurantStatus');
 const socketService = require('../services/socketService');
-const moment = require('moment');
+const moment = require('moment-timezone');
+const { getISTDayBounds, getISTNow } = require('../utils/dateService');
 const { getTodayMeals } = require('../utils/mealCounter');
 const { getActiveUserIds } = require('../utils/activeUserHelper');
 const { ensureDefaultMealsForDate } = require('../services/defaultMealService');
@@ -92,11 +94,10 @@ exports.getDashboardStats = async (req, res) => {
     }
     console.log('==============================================\n');
 
-    // Tomorrow's deliveries and meal orders (users select for next day)
-    // Users order meals for TOMORROW, not today
-    const today = moment().startOf('day').toDate();
-    const tomorrow = moment().add(1, 'day').startOf('day').toDate();
-    const dayAfter = moment().add(2, 'days').startOf('day').toDate();
+    // ✅ IST-CORRECT date boundaries — NEVER use moment().startOf('day') (UTC midnight).
+    // Always derive boundaries from IST so queries align with the Indian calendar day.
+    const { startUTC: today, nextDayStartUTC: tomorrow } = getISTDayBounds();
+    const dayAfter = getISTNow().startOf('day').add(2, 'days').toDate();
     
     // activeUserIds already fetched at the beginning
     console.log('\n👥 [DASHBOARD ACTIVE USERS FILTER]');
@@ -214,7 +215,7 @@ exports.getDashboardStats = async (req, res) => {
 
     // Expiring subscriptions (next 7 days) - exclude deleted users
     try {
-      const sevenDaysFromNow = moment().add(7, 'days').endOf('day').toDate();
+      const sevenDaysFromNow = getISTNow().add(7, 'days').endOf('day').toDate();
       expiringSubscriptions = await Subscription.countDocuments({
         status: 'active',
         user: { $in: activeUserIds },
@@ -227,8 +228,8 @@ exports.getDashboardStats = async (req, res) => {
 
     // Revenue calculations (this month)
     try {
-      const monthStart = moment().startOf('month').toDate();
-      const monthEnd = moment().endOf('month').toDate();
+      const monthStart = getISTNow().startOf('month').toDate();
+      const monthEnd   = getISTNow().endOf('month').toDate();
 
       const monthPayments = await Payment.aggregate([
         {
@@ -281,8 +282,8 @@ exports.getDashboardStats = async (req, res) => {
     try {
       console.log('🚨 [DASHBOARD] Calculating subscription alerts...');
 
-      const todayDate = moment().startOf('day').toDate();
-      const warningDate = moment().add(3, 'days').endOf('day').toDate();
+      const todayDate   = getISTNow().startOf('day').toDate();
+      const warningDate = getISTNow().add(3, 'days').endOf('day').toDate();
 
       // 1️⃣ EXPIRING SOON (within 3 days)
       expiringSoonCount = await Subscription.countDocuments({
@@ -411,8 +412,8 @@ exports.getDashboardStats = async (req, res) => {
     // ✅ TODAY COLLECTION (NEW - Separate from Monthly Collection)
     // Calculate total payments for TODAY only (paid + pending)
     try {
-      const startToday = moment().startOf('day').toDate();
-      const endToday = moment().endOf('day').toDate();
+      const startToday = getISTNow().startOf('day').toDate();
+      const endToday   = getISTNow().endOf('day').toDate();
 
       console.log('💰 Calculating Today Collection:');
       console.log('   Today Start:', startToday);
@@ -725,8 +726,8 @@ exports.getExpiringSubscriptions = async (req, res) => {
   try {
     const { days = 7 } = req.query;
     
-    const today = moment().startOf('day').toDate();
-    const futureDate = moment().add(parseInt(days), 'days').endOf('day').toDate();
+    const today      = getISTNow().startOf('day').toDate();
+    const futureDate = getISTNow().add(parseInt(days), 'days').endOf('day').toDate();
 
     // Get active users (non-deleted) - same logic as dashboard
     const activeUserIds = await User.find({ 
@@ -1217,5 +1218,87 @@ exports.resetUserPassword = async (req, res) => {
       message: 'Error resetting user password',
       error: error.message
     });
+  }
+};
+
+// ============================================================
+// PHASE 16A — RESTAURANT OPEN / CLOSE TOGGLE
+// ============================================================
+
+// @desc    Get current restaurant open/close status
+// @route   GET /api/admin/restaurant/status
+// @access  Private (Owner)
+exports.getRestaurantStatus = async (req, res) => {
+  try {
+    let status = await RestaurantStatus.findOne();
+    if (!status) {
+      // Create default (open) if document doesn't exist
+      status = await RestaurantStatus.create({ isOpen: true });
+    }
+    res.status(200).json({
+      success: true,
+      data: {
+        isOpen:         status.isOpen,
+        message:        status.message || null,
+        lastUpdatedBy:  status.lastUpdatedBy || null,
+        updatedAt:      status.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error('Get restaurant status error:', error);
+    res.status(500).json({ success: false, message: 'Error fetching restaurant status', error: error.message });
+  }
+};
+
+// @desc    Toggle restaurant open/close
+// @route   PATCH /api/admin/restaurant/toggle
+// @access  Private (Owner)
+exports.toggleRestaurantStatus = async (req, res) => {
+  try {
+    const { isOpen, message } = req.body;
+
+    if (typeof isOpen !== 'boolean') {
+      return res.status(400).json({ success: false, message: '"isOpen" must be a boolean.' });
+    }
+
+    const update = {
+      isOpen,
+      lastUpdatedBy: req.user._id,
+      updatedAt:     new Date(),
+    };
+    if (message !== undefined) update.message = message;
+
+    const status = await RestaurantStatus.findOneAndUpdate(
+      {},            // match the single doc
+      update,
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    const stateLabel = isOpen ? 'OPEN' : 'CLOSED';
+    console.log(`🏪 [RESTAURANT] Status changed to ${stateLabel} by ${req.user.name}`);
+
+    // Log the action
+    await OwnerAuditLog.logAction(req.user._id, 'restaurant_toggle', null, { isOpen, message });
+
+    // Broadcast to ALL connected clients (customers + owner panel)
+    socketService.emitRestaurantStatusUpdated({
+      isOpen,
+      message: status.message || null,
+      updatedBy: req.user.name,
+      updatedAt: status.updatedAt,
+    });
+
+    res.status(200).json({
+      success:  true,
+      message:  `Restaurant is now ${stateLabel}.`,
+      data: {
+        isOpen:  status.isOpen,
+        message: status.message || null,
+        updatedAt: status.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error('Toggle restaurant status error:', error);
+    res.status(500).json({ success: false, message: 'Error updating restaurant status', error: error.message });
   }
 };

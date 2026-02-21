@@ -913,51 +913,73 @@ exports.renewSubscription = async (req, res) => {
     const newPlanCategory = resolvedPlan ? resolvedPlan.planCategory : (oldSubscription.planCategory || 'classic');
     const newAmount = amount || (resolvedPlan ? resolvedPlan.totalPrice : oldSubscription.amount);
 
-    console.log(`   📝 Creating new subscription with:`);
+    console.log(`   📝 Renewing existing subscription (updateOne) with:`);
     console.log(`      plan: ${newPlanId}`);
     console.log(`      planType (food): ${newPlanType}`);
     console.log(`      planCategory: ${newPlanCategory}`);
     console.log(`      amount: ${newAmount}`);
 
-    // Create new subscription
-    const newSubscription = await Subscription.create({
-      user: oldSubscription.user,
-      plan: newPlanId,
-      planType: newPlanType,
-      planCategory: newPlanCategory,
-      startDate: start.toDate(),
-      endDate: end.toDate(),
+    // ============================================================
+    // CRITICAL FIX — Phase 5:
+    // NEVER create a new subscription on renew.
+    // Update the EXISTING subscription's dates + status in-place.
+    // This prevents E11000 duplicate key errors and history sprawl.
+    // ============================================================
+    const renewUpdate = {
+      plan:             newPlanId,
+      planType:         newPlanType,
+      planCategory:     newPlanCategory,
+      startDate:        start.toDate(),
+      endDate:          end.toDate(),
       totalDays,
-      remainingDays: totalDays,
-      amount: newAmount,
-      mealPreferences: oldSubscription.mealPreferences,
-      planDetails: resolvedPlan ? {
-        planType: resolvedPlan.durationType,
-        planCategory: resolvedPlan.planCategory,
-        menuCategory: resolvedPlan.menuCategory,
-        deliveriesPerWeek: resolvedPlan.deliveriesPerWeek,
-        mealsPerDelivery: resolvedPlan.mealsPerDelivery
-      } : oldSubscription.planDetails,
-      createdBy: req.user._id
-    });
+      remainingDays:    totalDays,
+      usedDays:         0,
+      amount:           newAmount,
+      status:           'pending_approval',  // owner must re-approve each renewal
+      reminderSent:     false,
+      graceNotified:    false,
+      disabledNotified: false,
+      expiredAt:        null,
+      graceStartedAt:   null,
+      approvedBy:       null,
+      approvedAt:       null,
+      // Ledger fields
+      previousExpiryDate: oldSubscription.endDate,
+      renewedAt:          new Date(),
+      renewedBy:          req.user._id,
+    };
 
-    // Mark old subscription as expired
-    oldSubscription.status = 'expired';
-    await oldSubscription.save();
+    if (resolvedPlan) {
+      renewUpdate.planDetails = {
+        planId:             resolvedPlan._id,
+        planName:           resolvedPlan.name,
+        planType:           resolvedPlan.durationType,
+        durationType:       resolvedPlan.durationType,
+        foodType:           resolvedPlan.menuCategory,
+      };
+    }
 
-    // Re-enable user account
+    const renewedSubscription = await Subscription.findByIdAndUpdate(
+      oldSubscription._id,
+      renewUpdate,
+      { new: true, runValidators: true }
+    );
+
+    // Re-enable user account if it was disabled
     const user = await User.findById(oldSubscription.user);
-    user.isActive = true;
-    await user.save();
+    if (user && !user.isActive) {
+      user.isActive = true;
+      await user.save();
+    }
 
-    console.log(`   ✅ New subscription created: ${newSubscription._id}`);
-    console.log(`   ✅ Start: ${moment(newSubscription.startDate).format('YYYY-MM-DD')}`);
-    console.log(`   ✅ End: ${moment(newSubscription.endDate).format('YYYY-MM-DD')}`);
+    console.log(`   ✅ Subscription RENEWED in-place: ${renewedSubscription._id}`);
+    console.log(`   ✅ Start: ${moment(renewedSubscription.startDate).format('YYYY-MM-DD')}`);
+    console.log(`   ✅ End:   ${moment(renewedSubscription.endDate).format('YYYY-MM-DD')}`);
 
-    res.status(201).json({
+    res.status(200).json({
       success: true,
       message: 'Subscription renewed successfully',
-      data: newSubscription
+      data: renewedSubscription
     });
   } catch (error) {
     console.error('Renew subscription error:', error);

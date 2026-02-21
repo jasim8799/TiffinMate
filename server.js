@@ -139,8 +139,16 @@ app.use('*', (req, res) => {
 console.log('🔄 Connecting to MongoDB...');
 const connectDB = require('./config/database');
 
-connectDB().then(() => {
+connectDB().then(async () => {
   console.log('✅ Database connected successfully');
+
+  // Ensure MongoDB performance indexes (Phase 15 — idempotent)
+  try {
+    const { ensureIndexes } = require('./scripts/ensureIndexes');
+    await ensureIndexes();
+  } catch (err) {
+    console.warn('⚠️ ensureIndexes non-fatal error:', err.message);
+  }
 
   // Start cron jobs only after DB connection
   if (process.env.ENABLE_CRON === 'true') {

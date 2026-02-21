@@ -1,5 +1,5 @@
-const moment = require('moment');
-const { getNextOrderableDeliveryMoment, getCutoffTimeForDate } = require('./deliveryDateHelper');
+const moment = require('moment-timezone');
+const { getISTDayBounds, getISTNow } = require('./dateService');
 
 /**
  * ======================================================================
@@ -8,44 +8,43 @@ const { getNextOrderableDeliveryMoment, getCutoffTimeForDate } = require('./deli
  * This module defines THE ONLY canonical way to count meals.
  * Both Dashboard and Kitchen MUST use these functions.
  * NO other counting logic is allowed anywhere in the system.
+ *
+ * KITCHEN RULE: Always query TODAY (IST). Never flip to tomorrow.
+ * At midnight IST, "today" becomes the new day automatically.
  * ======================================================================
  */
 
 /**
- * Get meals for the EFFECTIVE DELIVERY DATE
- * ✅ Uses getEffectiveDeliveryDate() to determine correct date
- * ✅ Before cutoff (11:00 PM) → TODAY
- * ✅ After cutoff (11:00 PM) → TOMORROW
- * 
+ * Get meals for TODAY (IST) — used by kitchen and dashboard.
+ *
  * @param {Array} activeUserIds - Array of active user IDs to include
  * @param {Object} MealOrder - Mongoose model
  * @returns {Promise<Object>} { mealOrders, lunchCount, dinnerCount, totalUsers }
  */
 async function getTodayMeals(activeUserIds, MealOrder) {
-  // ✅ USE NEXT ORDERABLE DELIVERY MOMENT (kitchen-centric)
-  const effectiveDate = getNextOrderableDeliveryMoment();
-  const start = effectiveDate.clone().startOf('day').toDate();
-  const end = effectiveDate.clone().endOf('day').toDate();
+  // ✅ ALWAYS use TODAY IST — never flip to tomorrow after cutoff.
+  //    Kitchen prepares today's meals until midnight.
+  const { startUTC: start, nextDayStartUTC: end } = getISTDayBounds();
 
-  const now = moment.tz('Asia/Kolkata');
-  const cutoffTime = getCutoffTimeForDate(effectiveDate.toDate());
-  const isAfterCutoff = now.isAfter(cutoffTime);
+  const now = getISTNow();
+  const isAfterCutoff = now.hour() >= 23;
 
   if (process.env.NODE_ENV !== 'production') {
     console.log('\n🔍 [mealCounter.js] getTodayMeals() called');
     console.log('📅 Date Boundaries:');
-    console.log('   - Current Time:', now.format('YYYY-MM-DD HH:mm:ss'));
-    console.log('   - After Cutoff?:', isAfterCutoff ? 'YES → Using TOMORROW' : 'NO → Using TODAY');
-    console.log('   - Effective Date:', effectiveDate.format('YYYY-MM-DD (dddd)'));
-    console.log('   - Start:', moment(start).format('YYYY-MM-DD HH:mm:ss'));
-    console.log('   - End:', moment(end).format('YYYY-MM-DD HH:mm:ss'));
+    console.log('   - Current Time (IST):', now.format('YYYY-MM-DD HH:mm:ss'));
+    console.log('   - After Cutoff?:', isAfterCutoff ? 'YES (but still showing TODAY)' : 'NO');
+    console.log('   - Query Start (UTC):', start.toISOString());
+    console.log('   - Query End   (UTC):', end.toISOString());
     console.log('👥 Active Users in Query:', activeUserIds.length);
   }
 
-  // Query meals for EFFECTIVE delivery date
+  // ✅ Query meals for TODAY IST (always today, never tomorrow)
   const mealsToday = await MealOrder.find({
-    deliveryDate: { $gte: start, $lte: end },
-    user: { $in: activeUserIds }
+    deliveryDate: { $gte: start, $lt: end },
+    user:         { $in: activeUserIds },
+    status:       { $ne: 'cancelled' },
+    'selectedMeal.isSkip': { $ne: true },
   }).populate('user', 'name mobile userId address');
 
   // Count by meal type
@@ -72,9 +71,9 @@ async function getTodayMeals(activeUserIds, MealOrder) {
     if (mealsToday.length > 0) {
       console.log('\n📝 Sample Meal Orders (first 3):');
       mealsToday.slice(0, 3).forEach((order, idx) => {
-        console.log(`   ${idx + 1}. User: ${order.user.name}`);
-        console.log(`      - Created: ${moment(order.createdAt).format('YYYY-MM-DD HH:mm:ss')}`);
-        console.log(`      - Delivery: ${moment(order.deliveryDate).format('YYYY-MM-DD HH:mm:ss')}`);
+        console.log(`   ${idx + 1}. User: ${order.user?.name || 'N/A'}`);
+        console.log(`      - Created:  ${order.createdAt ? new Date(order.createdAt).toISOString() : 'N/A'}`);
+        console.log(`      - Delivery: ${order.deliveryDate ? new Date(order.deliveryDate).toISOString() : 'N/A'}`);
         console.log(`      - Type: ${order.mealType}`);
       });
     } else {

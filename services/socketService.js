@@ -483,6 +483,41 @@ class SocketService {
   isUserConnected(userId) {
     return this.connectedClients.has(userId);
   }
+
+  // ============================================================
+  // PHASE 16 — RESTAURANT STATUS + DELIVERY STATUS EVENTS
+  // ============================================================
+
+  /**
+   * Broadcast restaurant open/close state to ALL connected clients.
+   * Both customers and the owner panel react to this event.
+   * @param {{ isOpen: boolean, message?: string, updatedBy?: string, updatedAt: Date }} data
+   */
+  emitRestaurantStatusUpdated(data) {
+    if (!this.io) {
+      console.warn('⚠️ Socket.IO not initialized, cannot emit restaurant_status_updated');
+      return;
+    }
+    console.log(`📢 Broadcasting: restaurant_status_updated — isOpen: ${data.isOpen}`);
+    this.io.emit('restaurant_status_updated', {
+      ...data,
+      eventId: `restaurant_${Date.now()}`,
+      timestamp: new Date(),
+    });
+  }
+
+  /**
+   * Notify a specific user that their delivery status changed.
+   * Also notifies the owners room so dashboard updates.
+   * @param {{ deliveryId, userId, userName?, status, mealType, deliveryDate, updatedAt }} data
+   */
+  emitDeliveryStatusUpdated(data) {
+    console.log(`📢 delivery_status_updated → user:${data.userId} & owners`);
+    const eventId = `delivery_${data.deliveryId}_${Date.now()}`;
+    const payload = { ...data, eventId, timestamp: new Date() };
+    this.safeEmit('delivery_status_updated', `user:${data.userId}`, payload);
+    this.safeEmit('delivery_status_updated', 'owners', payload);
+  }
 }
 
 // Export singleton instance

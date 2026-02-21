@@ -8,7 +8,9 @@ const {
   approveExtraTiffin,
   getPauseRequests,
   approvePauseRequest,
-  resetUserPassword
+  resetUserPassword,
+  getRestaurantStatus,
+  toggleRestaurantStatus,
 } = require('../controllers/adminController');
 const { getAllLeads } = require('../controllers/leadController');
 const { protect, authorize } = require('../middleware/auth');
@@ -27,6 +29,10 @@ router.post('/extra-tiffins/:id/approve', protect, authorize('owner'), approveEx
 router.get('/pause-requests', protect, authorize('owner'), getPauseRequests);
 router.post('/pause-requests/:id/approve', protect, authorize('owner'), approvePauseRequest);
 router.post('/reset-user-password/:userId', protect, authorize('owner'), resetUserPassword);
+
+// ── Phase 16A: Restaurant open/close toggle ──────────────────────────────
+router.get('/restaurant/status',  protect, authorize('owner'), getRestaurantStatus);
+router.patch('/restaurant/toggle', protect, authorize('owner'), toggleRestaurantStatus);
 
 // Leads Management
 router.get('/leads', protect, authorize('owner'), getAllLeads);

@@ -9,6 +9,11 @@ const restaurantStatusSchema = new mongoose.Schema({
   message: {
     type: String,
     default: 'Restaurant is closed today'
+  },
+  lastUpdatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
   }
 }, {
   timestamps: true

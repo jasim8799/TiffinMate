@@ -5,6 +5,14 @@ const requireActiveSubscription = require('../middleware/requireActiveSubscripti
 const requireRestaurantOpen = require('../middleware/requireRestaurantOpen');
 const mealController = require('../controllers/mealController');
 
+// ─── Phase 6: Unified date-based query (used by all tabs, kitchen, dashboard) ─
+// GET /api/meals/by-date?date=YYYY-MM-DD
+router.get('/by-date', protect, mealController.getMealsByDate);
+
+// ─── Phase 14: Calendar endpoint ──────────────────────────────────────────────
+// GET /api/meals/calendar?month=YYYY-MM
+router.get('/calendar', protect, mealController.getMealsCalendar);
+
 // 🔐 Subscription-based routes
 router.post('/select', protect, requireActiveSubscription, requireRestaurantOpen, mealController.selectMeal);
 router.post('/skip', protect, requireActiveSubscription, requireRestaurantOpen, mealController.skipMeal);
@@ -13,7 +21,5 @@ router.get('/my-selection', protect, mealController.getMyMealSelection); // ✅ 
 // 🟢 Daily meal routes (NO subscription middleware)
 router.post('/daily/select', protect, mealController.selectDailyMeal);
 router.get('/daily/my-selection', protect, mealController.getMyDailyMealSelection);
-
-
 
 module.exports = router;

@@ -138,6 +138,29 @@ const subscriptionSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Payment'
   },
+  // ── Phase 5: Renewal ledger ──────────────────────────────────
+  previousExpiryDate: {
+    type: Date,
+    default: null
+  },
+  renewedAt: {
+    type: Date,
+    default: null
+  },
+  renewedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  // Skip ledger counters
+  totalLunchSkipped: {
+    type: Number,
+    default: 0
+  },
+  totalDinnerSkipped: {
+    type: Number,
+    default: 0
+  },
   overrideLog: [{
     action: {
       type: String,

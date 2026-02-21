@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   createDelivery,
   updateDeliveryStatus,
+  updateDeliveryByUser,
   getTodaysDeliveries,
   getUserDeliveries,
   getMyDeliveries,
@@ -21,6 +22,8 @@ router.post('/auto-create-today', protect, authorize('owner'), autoCreateTodaysD
 router.get('/today-users', protect, authorize('owner'), getTodayUsers);
 router.patch('/out-for-delivery', protect, authorize('owner'), markSelectedOutForDelivery);
 router.patch('/mark-out-for-delivery', protect, authorize('owner'), markAllOutForDelivery);
+// Phase 16B: Quick delivery status update by userId + date + mealType
+router.patch('/update-by-user', protect, authorize('owner'), updateDeliveryByUser);
 router.get('/today', protect, authorize('owner', 'delivery'), getTodaysDeliveries);
 router.get('/kitchen-summary', protect, authorize('owner'), getKitchenSummary);
 router.get('/my', protect, authorize('customer'), getMyDeliveries);

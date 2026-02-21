@@ -5,9 +5,11 @@ const MealOrder = require('../models/MealOrder');
 const smsService = require('../services/smsService');
 const socketService = require('../services/socketService');
 const { notifyDeliveryStatus } = require('../services/deliveryNotificationService');
-const moment = require('moment');
+const DeliveryStateMachine = require('../services/deliveryStateMachine');
+const { aggregateKitchenData } = require('../services/kitchenAggregatorService');
+const moment = require('moment-timezone');
 const { getActiveUserIds } = require('../utils/activeUserHelper');
-const { getNextOrderableDeliveryMoment, isCutoffPassed } = require('../utils/deliveryDateHelper');
+const { getISTDayBounds, getISTNow, isCutoffPassed, normaliseDeliveryDate } = require('../utils/dateService');
 const { ensureDefaultMealsForDate } = require('../services/defaultMealService');
 
 // @desc    Create delivery
@@ -71,19 +73,18 @@ exports.createDelivery = async (req, res) => {
   }
 };
 
-// @desc    Update delivery status
+// @desc    Update delivery status (OWNER-CONTROLLED ONLY — no cron auto-update)
 // @route   PATCH /api/deliveries/:id/status
-// @access  Private (Owner, Delivery)
+// @access  Private (Owner only — NEVER auto, NEVER cron)
 exports.updateDeliveryStatus = async (req, res) => {
   try {
     const { status } = req.body;
 
-    // Status whitelist validation
-    const allowedStatuses = ['preparing', 'on-the-way', 'delivered', 'paused'];
-    if (!allowedStatuses.includes(status)) {
+    // ── State machine validation ─────────────────────────────────
+    if (!DeliveryStateMachine.isValidStatus(status)) {
       return res.status(400).json({
         success: false,
-        message: `Invalid status. Allowed: ${allowedStatuses.join(', ')}`
+        message: `Invalid status "${status}". Allowed: ${DeliveryStateMachine.allStatuses().join(', ')}`,
       });
     }
 
@@ -92,51 +93,62 @@ exports.updateDeliveryStatus = async (req, res) => {
       .populate('subscription');
 
     if (!delivery) {
-      return res.status(404).json({
-        success: false,
-        message: 'Delivery not found'
-      });
+      return res.status(404).json({ success: false, message: 'Delivery not found' });
     }
 
-    // Guard: Do not send notification if status is already same
+    // Guard: no-op if already at target status
     if (delivery.status === status) {
       return res.status(200).json({
         success: true,
         message: 'Status already set — no update needed',
-        data: delivery
+        data: delivery,
       });
     }
 
-    // Update status
-    await delivery.updateStatus(status);
+    // ── Enforce valid state transition ───────────────────────────
+    try {
+      DeliveryStateMachine.validateTransition(delivery.status, status);
+    } catch (transitionError) {
+      return res.status(400).json({
+        success: false,
+        message: transitionError.message,
+        allowedNext: DeliveryStateMachine.nextAllowedStatuses(delivery.status),
+      });
+    }
 
+    // ── Apply status update ──────────────────────────────────────
+    await delivery.updateStatus(status);
     await delivery.populate('user');
     await notifyDeliveryStatus(delivery, status);
 
-    // Handle delivery boy assignment for 'on-the-way' status
     if (status === 'on-the-way' && req.body.deliveryBoyId) {
       delivery.deliveryBoy = req.body.deliveryBoyId;
       await delivery.save();
     }
 
-    // Mark day as used in subscription for 'delivered' status
-    if (status === 'delivered') {
-      const subscription = delivery.subscription;
-      await subscription.markDayUsed();
+    if (status === 'delivered' && delivery.subscription) {
+      try { await delivery.subscription.markDayUsed(); } catch (_) { /* non-fatal */ }
     }
+
+    // ── Emit real-time event (user:id room + owners room) ───────
+    socketService.emitDeliveryStatusUpdated({
+      deliveryId:   delivery._id,
+      userId:       delivery.user._id,
+      userName:     delivery.user.name,
+      status:       delivery.status,
+      mealType:     delivery.mealType,
+      deliveryDate: delivery.deliveryDate,
+      updatedAt:    new Date(),
+    });
 
     res.status(200).json({
       success: true,
       message: 'Delivery status updated successfully',
-      data: delivery
+      data: delivery,
     });
   } catch (error) {
     console.error('Update delivery status error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error updating delivery status',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error updating delivery status', error: error.message });
   }
 };
 
@@ -145,8 +157,7 @@ exports.updateDeliveryStatus = async (req, res) => {
 // @access  Private (Owner, Delivery)
 exports.getTodaysDeliveries = async (req, res) => {
   try {
-    const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
-    const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
+    const { startUTC: today, nextDayStartUTC: tomorrow } = getISTDayBounds();
 
     // Get active users only
     const activeUserIds = await User.find({ 
@@ -249,145 +260,104 @@ exports.getMyDeliveries = async (req, res) => {
 // @desc    Get today's delivery for current user
 // @route   GET /api/deliveries/my-today
 // @access  Private (Customer)
+//
+// SOURCE OF TRUTH FOR STATUS: Delivery collection (owner sets status).
+// MealOrder tells us WHAT was ordered; Delivery tells us WHERE it is.
 exports.getMyTodayDelivery = async (req, res) => {
   try {
-    const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
-    const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
-// ✅ USE MEALORDER AS SOURCE OF TRUTH (consistent with markSelectedOutForDelivery)
+    const { startUTC: today, nextDayStartUTC: tomorrow } = getISTDayBounds();
+
+    // ── 1. Check meal orders for today ─────────────────────────
     const mealOrders = await MealOrder.find({
-      user: req.user._id,
-      deliveryDate: { $gte: today, $lt: tomorrow }
-    }).sort({ createdAt: -1 });
+      user:         req.user._id,
+      deliveryDate: { $gte: today, $lt: tomorrow },
+      status:       { $ne: 'cancelled' },
+      'selectedMeal.isSkip': { $ne: true },
+    }).sort({ mealType: 1 }).lean();
 
     if (mealOrders.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'No delivery scheduled for today'
-      });
+      return res.status(404).json({ success: false, message: 'No meals scheduled for today' });
     }
 
-    // Get the most relevant status (prioritize out_for_delivery > preparing > others)
-    let finalStatus = 'pending';
-    let hasOutForDelivery = false;
-    let hasPreparing = false;
-    let hasDelivered = false;
+    // ── 2. Get delivery status from Delivery collection ─────────
+    const deliveries = await Delivery.find({
+      user:         req.user._id,
+      deliveryDate: { $gte: today, $lt: tomorrow },
+    }).lean();
 
-    mealOrders.forEach(order => {
-      const status = order.status?.toLowerCase() || 'pending';
-      if (status === 'out_for_delivery') {
-        hasOutForDelivery = true;
-      } else if (status === 'delivered') {
-        hasDelivered = true;
-      } else if (status === 'confirmed' || status === 'preparing') {
-        hasPreparing = true;
+    // Map mealType → delivery status
+    const deliveryStatusMap = {};
+    for (const d of deliveries) {
+      deliveryStatusMap[d.mealType] = d.status;
+    }
+
+    // Determine overall status (best single status for display)
+    const statusPriority = ['on-the-way', 'preparing', 'delivered', 'paused'];
+    let overallStatus = 'preparing'; // default if delivery doc not yet created
+    for (const priority of statusPriority) {
+      if (deliveries.some(d => d.status === priority)) {
+        overallStatus = priority;
+        break;
       }
-    });
-
-    // Determine final status to show user
-    if (hasOutForDelivery) {
-      finalStatus = 'out_for_delivery';
-    } else if (hasDelivered && !hasOutForDelivery) {
-      finalStatus = 'delivered';
-    } else if (hasPreparing) {
-      finalStatus = 'preparing';
     }
 
-    console.log(`📦 [MY TODAY DELIVERY] User ${req.user._id}: ${mealOrders.length} orders, status: ${finalStatus}`);
+    console.log(`📦 [MY TODAY DELIVERY] User ${req.user._id}: ${mealOrders.length} orders, overall: ${overallStatus}`);
 
     res.status(200).json({
       success: true,
       data: {
-        status: finalStatus,
+        status:     overallStatus,
         mealOrders: mealOrders.map(order => ({
-          mealType: order.mealType,
-          status: order.status,
-          deliveryDate: order.deliveryDate
-        }))
-      }
+          mealType:    order.mealType,
+          selectedMeal: order.selectedMeal,
+          deliveryStatus: deliveryStatusMap[order.mealType] || 'preparing',
+          deliveryDate: order.deliveryDate,
+        })),
+      },
     });
   } catch (error) {
     console.error('Get today delivery error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching today\'s delivery',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: "Error fetching today's delivery", error: error.message });
   }
 };
 
-// @desc    Get kitchen summary (meal-wise count)
-// @route   GET /api/deliveries/kitchen-summary
+// @desc    Get kitchen summary — accurate meal counts, veg/nonveg, ingredients
+// @route   GET /api/deliveries/kitchen-summary?date=YYYY-MM-DD
 // @access  Private (Owner)
+//
+// CRITICAL: Always queries TODAY IST (never flips to tomorrow after cutoff).
+// At midnight IST, "today" naturally becomes the new day.
+// If ?date param is provided, queries that specific IST date instead.
 exports.getKitchenSummary = async (req, res) => {
   try {
     const { date } = req.query;
-    
-    // KITCHEN-CENTRIC: Always use the next orderable delivery moment
-    // This ensures kitchen always sees the correct date for preparation
-    const targetDate = getNextOrderableDeliveryMoment();
-    console.log('🍽️ [KITCHEN SUMMARY] Using next orderable delivery date:', targetDate.format('YYYY-MM-DD'));
-    
-    const startOfDay = targetDate.startOf('day').toDate();
-    const endOfDay = targetDate.clone().endOf('day').toDate();
 
-    // ✅ ENSURE DEFAULT MEALS EXIST (auto-create if after cutoff)
-    if (isCutoffPassed()) {
-      console.log('🔧 [KITCHEN AUTO-DEFAULT] Ensuring default meals exist for:', targetDate.format('YYYY-MM-DD'));
-      await ensureDefaultMealsForDate(targetDate.toDate());
+    // Parse target date — defaults to today IST
+    let targetDate;
+    if (date) {
+      targetDate = moment.tz(date, 'YYYY-MM-DD', 'Asia/Kolkata').startOf('day').toDate();
+      if (!moment(targetDate).isValid()) {
+        return res.status(400).json({ success: false, message: 'Invalid date format. Use YYYY-MM-DD.' });
+      }
     }
 
-    // Get active users only
-    const activeUserIds = await User.find({ 
-      role: 'customer', 
-      isActive: true,
-      deletedAt: { $exists: false }
-    }).distinct('_id');
+    // Ensure default meals exist for the target date if after cutoff
+    const resolvedDate = targetDate || getISTNow().startOf('day').toDate();
+    if (isCutoffPassed()) {
+      await ensureDefaultMealsForDate(resolvedDate);
+    }
 
-    const deliveries = await Delivery.find({
-      deliveryDate: { $gte: startOfDay, $lte: endOfDay },
-      status: { $ne: 'disabled' },
-      user: { $in: activeUserIds }
-    }).populate('user', 'name mobile');
-
-    // Calculate summary
-    const summary = {
-      totalDeliveries: deliveries.length,
-      lunchCount: 0,
-      dinnerCount: 0,
-      bothCount: 0,
-      statusCounts: {
-        preparing: 0,
-        'on-the-way': 0,
-        delivered: 0,
-        paused: 0
-      },
-      deliveries: deliveries
-    };
-
-    deliveries.forEach(delivery => {
-      if (delivery.mealType === 'lunch') summary.lunchCount++;
-      else if (delivery.mealType === 'dinner') summary.dinnerCount++;
-      else if (delivery.mealType === 'both') summary.bothCount++;
-
-      // Make statusCounts increment safe — initialize if missing
-      if (!summary.statusCounts[delivery.status]) {
-        summary.statusCounts[delivery.status] = 0;
-      }
-      summary.statusCounts[delivery.status]++;
-    });
+    // Run the full aggregation
+    const report = await aggregateKitchenData(resolvedDate);
 
     res.status(200).json({
       success: true,
-      date: targetDate.format('YYYY-MM-DD'),
-      data: summary
+      date:    report.date,
+      data:    report,
     });
   } catch (error) {
     console.error('Get kitchen summary error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching kitchen summary',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error fetching kitchen summary', error: error.message });
   }
 };
 
@@ -804,5 +774,100 @@ exports.markSelectedOutForDelivery = async (req, res) => {
       message: 'Error marking selected deliveries',
       error: error.message
     });
+  }
+};
+
+// ============================================================
+// PHASE 16B — QUICK DELIVERY STATUS UPDATE (by user + date + mealType)
+// ============================================================
+
+// @desc    Update delivery status by userId + date + mealType (for owner quick panel)
+// @route   PATCH /api/deliveries/update-by-user
+// @access  Private (Owner only)
+exports.updateDeliveryByUser = async (req, res) => {
+  try {
+    const { userId, date, mealType, status } = req.body;
+
+    if (!userId || !date || !mealType || !status) {
+      return res.status(400).json({
+        success: false,
+        message: 'userId, date, mealType, and status are all required.',
+      });
+    }
+
+    if (!DeliveryStateMachine.isValidStatus(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status "${status}". Allowed: ${DeliveryStateMachine.allStatuses().join(', ')}`,
+      });
+    }
+
+    // Normalise to IST start-of-day UTC for DB lookup
+    const deliveryDate = normaliseDeliveryDate(date);
+
+    // ── Only affects the matching IST date ─────────────────────
+    const delivery = await Delivery.findOne({ user: userId, deliveryDate, mealType })
+      .populate('user', 'name mobile role')
+      .populate('subscription');
+
+    if (!delivery) {
+      // Try to find without mealType restriction (delivery might cover 'both')
+      const broadDelivery = await Delivery.findOne({ user: userId, deliveryDate })
+        .populate('user', 'name mobile role')
+        .populate('subscription');
+
+      if (!broadDelivery) {
+        return res.status(404).json({
+          success: false,
+          message: `No delivery found for user ${userId} on ${date}. Create delivery first.`,
+        });
+      }
+    }
+
+    const targetDelivery = delivery || await Delivery.findOne({ user: userId, deliveryDate })
+      .populate('user', 'name mobile role')
+      .populate('subscription');
+
+    if (targetDelivery.status === status) {
+      return res.status(200).json({ success: true, message: 'Status already set', data: targetDelivery });
+    }
+
+    // Validate state transition
+    try {
+      DeliveryStateMachine.validateTransition(targetDelivery.status, status);
+    } catch (transitionError) {
+      return res.status(400).json({
+        success: false,
+        message: transitionError.message,
+        allowedNext: DeliveryStateMachine.nextAllowedStatuses(targetDelivery.status),
+      });
+    }
+
+    await targetDelivery.updateStatus(status);
+    await targetDelivery.populate('user');
+
+    // Notify user + owner via socket
+    const payload = {
+      deliveryId:   targetDelivery._id,
+      userId:       targetDelivery.user._id,
+      userName:     targetDelivery.user.name,
+      status:       targetDelivery.status,
+      mealType:     targetDelivery.mealType,
+      deliveryDate: targetDelivery.deliveryDate,
+      updatedAt:    new Date(),
+    };
+    socketService.emitDeliveryStatusUpdated(payload);
+
+    // Send SMS notification
+    try { await notifyDeliveryStatus(targetDelivery, status); } catch (_) { /* non-fatal */ }
+
+    res.status(200).json({
+      success: true,
+      message: `Delivery status updated to "${status}" successfully.`,
+      data: targetDelivery,
+    });
+  } catch (error) {
+    console.error('Update delivery by user error:', error);
+    res.status(500).json({ success: false, message: 'Error updating delivery status', error: error.message });
   }
 };

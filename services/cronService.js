@@ -763,88 +763,14 @@ class CronService {
     return job;
   }
 
-  // Auto-update delivery statuses based on time (runs every 15 minutes)
+  // Auto-update delivery statuses based on time
+  // ⚠️ DISABLED — Per Phase 9 rules: delivery status is OWNER-CONTROLLED ONLY.
+  //   No cron, no auto-status. Owner updates manually via /api/deliveries/:id/status
+  //   or /api/deliveries/update-by-user. This method is intentionally a no-op.
   autoUpdateDeliveryStatuses() {
-    const jobName = 'Auto Update Delivery Statuses';
-
-    // Run every 15 minutes to check and update delivery statuses
-    const job = cron.schedule('*/15 * * * *', async () => {
-      // Check cron run guard
-      if (!(await this.shouldRunCronJob(jobName))) return;
-
-      logger.info(`Running: ${jobName}`);
-
-      try {
-        const today = nowIST().startOf('day').toDate();
-        const tomorrow = nowIST().add(1, 'day').startOf('day').toDate();
-
-        // Get all today's deliveries
-        const deliveries = await Delivery.find({
-          deliveryDate: { $gte: today, $lt: tomorrow },
-          deliveryStatus: { $in: ['IDLE', 'PREPARING', 'OUT_FOR_DELIVERY'] }
-        }).populate('user', 'name mobile');
-
-        let updatedCount = 0;
-
-        for (const delivery of deliveries) {
-          try {
-            const computedStatus = delivery.getDeliveryStatus();
-            const currentStatus = delivery.deliveryStatus;
-
-            // Only update if status has changed
-            if (computedStatus !== currentStatus) {
-              delivery.deliveryStatus = computedStatus;
-
-              // Update legacy status field too
-              if (computedStatus === 'PREPARING' && delivery.status !== 'preparing') {
-                delivery.status = 'preparing';
-                delivery.preparingStartTime = nowIST().toDate();
-              } else if (computedStatus === 'OUT_FOR_DELIVERY' && delivery.status !== 'on-the-way') {
-                delivery.status = 'on-the-way';
-                if (!delivery.outForDeliveryTime) {
-                  delivery.outForDeliveryTime = nowIST().toDate();
-                }
-              } else if (computedStatus === 'DELIVERED' && delivery.status !== 'delivered') {
-                delivery.status = 'delivered';
-                if (!delivery.deliveredTime) {
-                  delivery.deliveredTime = nowIST().toDate();
-                }
-              }
-
-              await delivery.save();
-
-              // Emit socket event for status change
-              if (delivery.user && delivery.user._id) {
-                socketService.emitDeliveryStatusUpdated({
-                  _id: delivery._id,
-                  user: delivery.user._id,
-                  status: delivery.status,
-                  deliveryStatus: computedStatus,
-                  deliveryDate: delivery.deliveryDate,
-                  mealType: delivery.mealType
-                });
-              }
-
-              updatedCount++;
-              logger.info(`Updated delivery ${delivery._id} from ${currentStatus} to ${computedStatus}`);
-            }
-          } catch (err) {
-            logger.error(`Failed to update delivery ${delivery._id}`, err);
-          }
-        }
-
-        if (updatedCount > 0) {
-          await SystemSetting.setValue('lastCronRun', nowIST().toDate(), 'Last cron run timestamp', 'cron-service');
-          logger.success(`${jobName}: Updated ${updatedCount} deliveries`);
-        }
-      } catch (error) {
-        logger.error(`${jobName} failed`, error);
-      }
-    });
-
-    this.jobs.push({ name: jobName, job });
-    logger.info(`Scheduled: ${jobName} - Every 15 minutes`);
-    return job;
+    console.log('ℹ️  [CRON] autoUpdateDeliveryStatuses() is DISABLED. Delivery status is owner-controlled only.');
+    // DO NOTHING — returning immediately without scheduling any job
+    return null;
   }
 
   // Weekly repair cron: Find active subscriptions past endDate and mark expired

@@ -2378,3 +2378,144 @@ exports.getPremiumItems = async (req, res) => {
     });
   }
 };
+
+// ============================================================
+// PHASE 6 — UNIFIED MEALS QUERY SERVICE
+// ============================================================
+// Single endpoint used by: Home Today tab, Home Tomorrow tab,
+//   Meals screen, Kitchen, Dashboard.
+// Query: GET /api/meals/by-date?date=YYYY-MM-DD
+// ============================================================
+const { getISTDayBounds: _getISTDayBounds, getISTNow: _getISTNow } = require('../utils/dateService');
+
+// @desc    Get meal selections for a given IST date
+// @route   GET /api/meals/by-date?date=YYYY-MM-DD
+// @access  Private (users get their own, owners get all)
+exports.getMealsByDate = async (req, res) => {
+  try {
+    const { date } = req.query;
+    if (!date) {
+      return res.status(400).json({ success: false, message: 'Query param "date" (YYYY-MM-DD) is required.' });
+    }
+
+    const targetMoment = moment.tz(date, 'YYYY-MM-DD', 'Asia/Kolkata').startOf('day');
+    if (!targetMoment.isValid()) {
+      return res.status(400).json({ success: false, message: 'Invalid date. Use YYYY-MM-DD format.' });
+    }
+
+    const { startUTC, nextDayStartUTC } = _getISTDayBounds(targetMoment.toDate());
+
+    const filter = {
+      deliveryDate: { $gte: startUTC, $lt: nextDayStartUTC },
+      status:       { $ne: 'cancelled' },
+    };
+
+    // Non-owner: restrict to own meals only
+    if (req.user.role !== 'owner') {
+      filter.user = req.user._id;
+    }
+
+    const mealOrders = await MealOrder.find(filter)
+      .populate('user', 'name mobile address')
+      .lean();
+
+    res.status(200).json({
+      success: true,
+      date:  targetMoment.format('YYYY-MM-DD'),
+      count: mealOrders.length,
+      data:  mealOrders,
+    });
+  } catch (error) {
+    console.error('getMealsByDate error:', error);
+    res.status(500).json({ success: false, message: 'Error fetching meals by date', error: error.message });
+  }
+};
+
+// ============================================================
+// PHASE 14 — CALENDAR ENDPOINT
+// ============================================================
+// GET /api/meals/calendar?month=YYYY-MM
+// Returns per-day meal status for the requesting user.
+// ============================================================
+
+// @desc    Get calendar data (ordered/skipped/default/expired) for a month
+// @route   GET /api/meals/calendar?month=YYYY-MM
+// @access  Private (Customer)
+exports.getMealsCalendar = async (req, res) => {
+  try {
+    const { month } = req.query; // expects "YYYY-MM"
+    if (!month) {
+      return res.status(400).json({ success: false, message: 'Query param "month" (YYYY-MM) is required.' });
+    }
+
+    const monthMoment = moment.tz(month, 'YYYY-MM', 'Asia/Kolkata');
+    if (!monthMoment.isValid()) {
+      return res.status(400).json({ success: false, message: 'Invalid month. Use YYYY-MM format.' });
+    }
+
+    const startUTC = monthMoment.clone().startOf('month').toDate();
+    const endUTC   = monthMoment.clone().endOf('month').toDate();
+
+    const orders = await MealOrder.find({
+      user:         req.user._id,
+      deliveryDate: { $gte: startUTC, $lte: endUTC },
+    }).lean();
+
+    // Check subscription coverage for this month
+    const subscription = await Subscription.findOne({
+      user:      req.user._id,
+      status:    { $in: ['active', 'expired', 'grace', 'paused', 'disabled'] },
+      startDate: { $lte: endUTC },
+      endDate:   { $gte: startUTC },
+    }).sort({ createdAt: -1 }).lean();
+
+    // Build a map: date string → status
+    const calendarMap = {};
+
+    for (const order of orders) {
+      const dateStr = moment.tz(order.deliveryDate, 'Asia/Kolkata').format('YYYY-MM-DD');
+      if (!calendarMap[dateStr]) {
+        calendarMap[dateStr] = { date: dateStr, lunch: null, dinner: null };
+      }
+
+      let status = 'ordered';
+      if (order.selectedMeal?.isSkip)    status = 'skipped';
+      else if (order.selectedMeal?.isDefault) status = 'default';
+
+      calendarMap[dateStr][order.mealType] = {
+        status,
+        mealName: order.selectedMeal?.name || '',
+        items:    order.selectedMeal?.items || [],
+      };
+    }
+
+    // Mark expired days (subscription ended but day is within month)
+    if (subscription?.endDate) {
+      const endMoment = moment.tz(subscription.endDate, 'Asia/Kolkata');
+      const cursor = monthMoment.clone().startOf('month');
+      const monthEnd = monthMoment.clone().endOf('month');
+      while (cursor.isSameOrBefore(monthEnd)) {
+        if (cursor.isAfter(endMoment)) {
+          const dateStr = cursor.format('YYYY-MM-DD');
+          if (!calendarMap[dateStr]) {
+            calendarMap[dateStr] = { date: dateStr, lunch: null, dinner: null };
+          }
+          calendarMap[dateStr].expired = true;
+        }
+        cursor.add(1, 'day');
+      }
+    }
+
+    const calendar = Object.values(calendarMap).sort((a, b) => a.date.localeCompare(b.date));
+
+    res.status(200).json({
+      success: true,
+      month:   monthMoment.format('YYYY-MM'),
+      data:    calendar,
+      subscriptionEndDate: subscription?.endDate || null,
+    });
+  } catch (error) {
+    console.error('getMealsCalendar error:', error);
+    res.status(500).json({ success: false, message: 'Error fetching calendar data', error: error.message });
+  }
+};
