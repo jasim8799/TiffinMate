@@ -23,8 +23,11 @@ app.set('trust proxy', 1);
 console.log('✅ Express app initialized');
 
 // Apply security and utility middleware
+// Note: We configure Cross-Origin-Resource-Policy per-route for static files
+// instead of globally via helmet to avoid conflicts
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: false,
 }));
 app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
@@ -34,6 +37,20 @@ app.use(compression());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Static file serving for uploaded files (ID images, profiles, etc.)
+const path = require('path');
+app.use(
+  '/uploads',
+  express.static(path.join(__dirname, 'uploads'), {
+    maxAge: '7d',
+    etag: true,
+    setHeaders: (res) => {
+      res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    },
+  })
+);
+console.log('✅ Static /uploads folder exposed');
 
 console.log('✅ Middleware applied');
 
