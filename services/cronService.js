@@ -6,6 +6,7 @@ const MealOrder = require('../models/MealOrder');
 const DefaultMeal = require('../models/DefaultMeal');
 const Delivery = require('../models/Delivery');
 const SystemSetting = require('../models/SystemSetting');
+const RestaurantStatus = require('../models/RestaurantStatus');
 const smsService = require('./smsService');
 const socketService = require('./socketService');
 const logger = require('../utils/logger');
@@ -292,12 +293,27 @@ class CronService {
       logger.info('📋 Assigns defaults for EFFECTIVE DELIVERY DATE (tomorrow)');
 
       try {
-        // ✅ USE NEXT ORDERABLE DELIVERY MOMENT
-        // After 11:00 PM cutoff → assigns for TOMORROW
-        // This ensures defaults are assigned for the NEXT delivery day
-        const effectiveDate = getNextOrderableDeliveryMoment();
+        // ✅ FIX: Cron runs at 11:05 PM — cutoff just passed for TOMORROW.
+        // Use explicit tomorrow (not getNextOrderableDeliveryMoment which returns day+2 after 11 PM).
+        const effectiveDate = nowIST().startOf('day').add(1, 'day');
         logger.info(`\n📅 Target Date: ${effectiveDate.format('YYYY-MM-DD (dddd)')}`);
-        logger.info(`   Explanation: After 11:00 PM, meals are for TOMORROW`);
+        logger.info(`   Explanation: 11:05 PM cron — assigning defaults for TOMORROW`);
+
+        // ✅ BUG 1 FIX: Guard — skip if restaurant is globally closed or closed for this date
+        const restaurantStatus = await RestaurantStatus.findOne();
+        if (restaurantStatus) {
+          if (restaurantStatus.isOpen === false) {
+            logger.info('⏭️ Restaurant is globally closed — skipping default meal assignment');
+            return;
+          }
+          if (restaurantStatus.closedDate) {
+            const closedDay = moment.tz(restaurantStatus.closedDate, 'Asia/Kolkata').startOf('day');
+            if (closedDay.isSame(effectiveDate.clone().startOf('day'), 'day')) {
+              logger.info('⏭️ Restaurant is closed for delivery date — skipping default meal assignment');
+              return;
+            }
+          }
+        }
 
         // Assign lunch defaults
         logger.info('\n🍱 Assigning LUNCH defaults...');
@@ -392,6 +408,7 @@ class CronService {
               $setOnInsert: {
                 subscription: subscription._id,
                 orderDate: nowIST().toDate(),
+                orderSource: 'subscription',
                 selectedMeal: {
                   name: defaultMealName,
                   items: [],

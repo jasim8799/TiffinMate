@@ -514,7 +514,12 @@ class SocketService {
   emitDeliveryStatusUpdated(data) {
     console.log(`📢 delivery_status_updated → user:${data.userId} & owners`);
     const eventId = `delivery_${data.deliveryId}_${Date.now()}`;
-    const payload = { ...data, eventId, timestamp: new Date() };
+    const payload = {
+      ...data,
+      deliveryStatus: data.status, // ✅ BUG 3 FIX: mirror field for frontend compat
+      eventId,
+      timestamp: new Date(),
+    };
     this.safeEmit('delivery_status_updated', `user:${data.userId}`, payload);
     this.safeEmit('delivery_status_updated', 'owners', payload);
   }

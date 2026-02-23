@@ -723,12 +723,14 @@ exports.markSelectedOutForDelivery = async (req, res) => {
       // ✅ EMIT SOCKET EVENT PER USER (Real-time update - TARGETED ONLY)
       console.log(`   📤 Emitting to ONLY user ${order.user._id}: delivery_status_updated`);
       socketService.emitToUser(order.user._id.toString(), 'delivery_status_updated', {
-        orderId: order._id,
-        userId: order.user._id,
-        status: 'out_for_delivery',
-        mealType: order.mealType,
-        deliveryDate: order.deliveryDate,
-        message: '🚚 Your food is on the way!'
+        orderId:        order._id,
+        userId:         order.user._id,
+        status:         'out_for_delivery',
+        deliveryStatus: 'out_for_delivery',  // ✅ BUG 3 FIX: mirror field
+        eventId:        `delivery_${order._id}_${Date.now()}`, // ✅ BUG 3 FIX: dedup key
+        mealType:       order.mealType,
+        deliveryDate:   order.deliveryDate,
+        message:        '🚚 Your food is on the way!'
       });
 
       // Send SMS notification

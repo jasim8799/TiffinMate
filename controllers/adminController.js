@@ -1239,6 +1239,7 @@ exports.getRestaurantStatus = async (req, res) => {
       success: true,
       data: {
         isOpen:         status.isOpen,
+        closedDate:     status.closedDate || null,
         message:        status.message || null,
         lastUpdatedBy:  status.lastUpdatedBy || null,
         updatedAt:      status.updatedAt,
@@ -1255,46 +1256,73 @@ exports.getRestaurantStatus = async (req, res) => {
 // @access  Private (Owner)
 exports.toggleRestaurantStatus = async (req, res) => {
   try {
-    const { isOpen, message } = req.body;
+    const { isOpen, message, closeTomorrow } = req.body;
 
-    if (typeof isOpen !== 'boolean') {
+    // ✅ BUG 2 FIX: Support date-scoped close (closeTomorrow) without flipping global isOpen.
+    // closeTomorrow=true  → sets closedDate = IST midnight of tomorrow, keeps isOpen=true
+    // closeTomorrow=false → clears closedDate only
+    // isOpen=false        → global close (existing behaviour), clears closedDate
+    // isOpen=true         → global open, also clears closedDate
+    if (closeTomorrow !== undefined && typeof closeTomorrow !== 'boolean') {
+      return res.status(400).json({ success: false, message: '"closeTomorrow" must be a boolean.' });
+    }
+    if (isOpen !== undefined && typeof isOpen !== 'boolean') {
       return res.status(400).json({ success: false, message: '"isOpen" must be a boolean.' });
     }
+    if (isOpen === undefined && closeTomorrow === undefined) {
+      return res.status(400).json({ success: false, message: 'Provide "isOpen" or "closeTomorrow".' });
+    }
 
-    const update = {
-      isOpen,
-      lastUpdatedBy: req.user._id,
-      updatedAt:     new Date(),
-    };
+    const moment = require('moment-timezone');
+    const update = { lastUpdatedBy: req.user._id, updatedAt: new Date() };
     if (message !== undefined) update.message = message;
 
+    if (closeTomorrow === true) {
+      // Date-scoped: close only tomorrow, keep restaurant open today
+      update.isOpen = true;
+      update.closedDate = moment.tz('Asia/Kolkata').startOf('day').add(1, 'day').toDate();
+    } else if (closeTomorrow === false) {
+      // Clear date-scoped close only (do not touch isOpen)
+      update.closedDate = null;
+    } else {
+      // Global toggle (existing behaviour)
+      update.isOpen = isOpen;
+      update.closedDate = null; // clear any date-scoped close
+    }
+
     const status = await RestaurantStatus.findOneAndUpdate(
-      {},            // match the single doc
+      {},
       update,
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
 
-    const stateLabel = isOpen ? 'OPEN' : 'CLOSED';
+    let stateLabel;
+    if (closeTomorrow === true) stateLabel = 'CLOSED TOMORROW';
+    else if (closeTomorrow === false) stateLabel = 'TOMORROW CLOSE CLEARED';
+    else stateLabel = isOpen ? 'OPEN' : 'CLOSED';
+
     console.log(`🏪 [RESTAURANT] Status changed to ${stateLabel} by ${req.user.name}`);
 
     // Log the action — fire-and-forget, must not block response
-    OwnerAuditLog.logAction(req.user._id, 'restaurant_toggle', null, { isOpen, message }).catch(() => {});
+    OwnerAuditLog.logAction(req.user._id, 'restaurant_toggle', null, { isOpen: status.isOpen, closeTomorrow, message }).catch(() => {});
 
     // Broadcast to ALL connected clients (customers + owner panel)
     socketService.emitRestaurantStatusUpdated({
-      isOpen,
-      message: status.message || null,
-      updatedBy: req.user.name,
-      updatedAt: status.updatedAt,
+      isOpen:     status.isOpen,
+      closedDate: status.closedDate || null,
+      message:    status.message || null,
+      updatedBy:  req.user.name,
+      updatedAt:  status.updatedAt,
     });
 
     res.status(200).json({
-      success:  true,
-      message:  `Restaurant is now ${stateLabel}.`,
+      success: true,
+      message: `Restaurant is now ${stateLabel}.`,
       data: {
-        isOpen:  status.isOpen,
-        message: status.message || null,
-        updatedAt: status.updatedAt,
+        isOpen:     status.isOpen,
+        closedDate: status.closedDate || null,
+        message:    status.message || null,
+        updatedAt:  status.updatedAt,
       },
     });
   } catch (error) {

@@ -6,6 +6,12 @@ const restaurantStatusSchema = new mongoose.Schema({
     required: true,
     default: true
   },
+  // ✅ BUG 2 FIX: Date-scoped close. When set, only orders for THIS date are blocked.
+  // After the date passes, the middleware auto-ignores it (no manual reset needed).
+  closedDate: {
+    type: Date,
+    default: null
+  },
   message: {
     type: String,
     default: 'Restaurant is closed today'

@@ -284,14 +284,27 @@ const processPremiumMealSelection = (meal, dietaryPreference) => {
 // @access  Private (Customer)
 exports.selectMeal = async (req, res) => {
   try {
-    // ========== RESTAURANT CLOSE CHECK ==========
+    // ========== RESTAURANT CLOSE CHECK (date-aware) ==========
     const RestaurantStatus = require('../models/RestaurantStatus');
-    const status = await RestaurantStatus.findOne();
-    if (status && status.isOpen === false) {
-      return res.status(403).json({
-        success: false,
-        message: 'Restaurant is closed for tomorrow'
-      });
+    const restaurantStatus = await RestaurantStatus.findOne();
+    if (restaurantStatus) {
+      if (restaurantStatus.isOpen === false) {
+        return res.status(403).json({
+          success: false,
+          message: 'Restaurant is closed for tomorrow'
+        });
+      }
+      // ✅ BUG 2 FIX: Check date-scoped close
+      if (restaurantStatus.closedDate) {
+        const closedDay = moment.tz(restaurantStatus.closedDate, 'Asia/Kolkata').startOf('day');
+        const effectiveDay = getNextOrderableDeliveryMoment().startOf('day');
+        if (closedDay.isSame(effectiveDay, 'day')) {
+          return res.status(403).json({
+            success: false,
+            message: 'Restaurant is closed for tomorrow'
+          });
+        }
+      }
     }
 
     // ========== USE SUBSCRIPTION FROM MIDDLEWARE ==========
@@ -930,14 +943,27 @@ exports.getMyDailyMealSelection = (req, res) => {
 // @access  Private (Customer)
 exports.skipMeal = async (req, res) => {
   try {
-    // ========== RESTAURANT CLOSE CHECK ==========
+    // ========== RESTAURANT CLOSE CHECK (date-aware) ==========
     const RestaurantStatus = require('../models/RestaurantStatus');
-    const status = await RestaurantStatus.findOne();
-    if (status && status.isOpen === false) {
-      return res.status(403).json({
-        success: false,
-        message: 'Restaurant is closed for tomorrow'
-      });
+    const restaurantStatus = await RestaurantStatus.findOne();
+    if (restaurantStatus) {
+      if (restaurantStatus.isOpen === false) {
+        return res.status(403).json({
+          success: false,
+          message: 'Restaurant is closed for tomorrow'
+        });
+      }
+      // ✅ BUG 2 FIX: Check date-scoped close
+      if (restaurantStatus.closedDate) {
+        const closedDay = moment.tz(restaurantStatus.closedDate, 'Asia/Kolkata').startOf('day');
+        const effectiveDay = getNextOrderableDeliveryMoment().startOf('day');
+        if (closedDay.isSame(effectiveDay, 'day')) {
+          return res.status(403).json({
+            success: false,
+            message: 'Restaurant is closed for tomorrow'
+          });
+        }
+      }
     }
 
     const { mealType } = req.body;
