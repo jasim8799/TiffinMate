@@ -715,10 +715,14 @@ exports.markSelectedOutForDelivery = async (req, res) => {
     const updatePromises = mealOrders.map(async (order) => {
       console.log(`\n📦 Processing order for user: ${order.user.name} (${order.user._id})`);
       console.log(`   Order ID: ${order._id}`);
-      console.log(`   Current Status: ${order.status} → out_for_delivery`);
-      
-      order.status = 'out_for_delivery';
-      await order.save();
+      // ✅ FIX 500: MealOrder.status enum is ['pending','confirmed','cancelled'].
+      // Setting order.status = 'out_for_delivery' causes Mongoose ValidationError → 500.
+      // Use raw collection update to set non-schema deliveryStatus tracking field ONLY.
+      // order.status is intentionally left unchanged (remains 'confirmed').
+      await MealOrder.collection.updateOne(
+        { _id: order._id },
+        { $set: { deliveryStatus: 'on-the-way' } }
+      );
 
       // ✅ EMIT SOCKET EVENT PER USER (Real-time update - TARGETED ONLY)
       console.log(`   📤 Emitting to ONLY user ${order.user._id}: delivery_status_updated`);

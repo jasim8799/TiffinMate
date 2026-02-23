@@ -658,6 +658,32 @@ exports.createPayment = async (req, res) => {
       const deliveryDate = require('../utils/deliveryDateHelper').getDeliveryDateByOffset(0).toDate();
       const { start, end } = require('../utils/deliveryDateHelper').getISTDayRange(deliveryDate);
 
+      // ✅ GLOBAL RESTAURANT CLOSE GUARD — block daily meal payment when restaurant is closed
+      {
+        const RestaurantStatus = require('../models/RestaurantStatus');
+        const momentTz = require('moment-timezone');
+        const { getNextOrderableDeliveryMoment } = require('../utils/deliveryDateHelper');
+        const restaurantStatus = await RestaurantStatus.findOne();
+        if (restaurantStatus) {
+          if (restaurantStatus.isOpen === false) {
+            return res.status(403).json({
+              success: false,
+              message: 'Restaurant is closed for this delivery date'
+            });
+          }
+          if (restaurantStatus.closedDate) {
+            const closedDay = momentTz.tz(restaurantStatus.closedDate, 'Asia/Kolkata').startOf('day');
+            const effectiveDay = getNextOrderableDeliveryMoment().startOf('day');
+            if (closedDay.isSame(effectiveDay, 'day')) {
+              return res.status(403).json({
+                success: false,
+                message: 'Restaurant is closed for this delivery date'
+              });
+            }
+          }
+        }
+      }
+
       // 🔒 CRITICAL: Check for ANY existing payment (pending, paid, or verified) using date range
       const existingPayment = await Payment.findOne({
         user: req.user._id,
