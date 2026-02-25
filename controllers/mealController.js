@@ -2560,10 +2560,9 @@ exports.getOwnerAggregatedKitchen = async (req, res) => {
     }
     // targetDate = undefined → aggregateKitchenData defaults to today IST
 
-    // Auto-ensure default meals if after cutoff
-    if (_isCutoffPassed()) {
-      try { await ensureDefaultMealsForDate(targetDate || new Date()); } catch (_) {}
-    }
+    // ✅ READ-ONLY: Kitchen endpoint must NOT perform DB writes
+    // Default meal creation moved to cron job (autoAssignDefaultMeals)
+    // This prevents infinite loop: GET → default creation → socket emit → GET → ...
 
     const report = await aggregateKitchenData(targetDate);
 

@@ -271,12 +271,12 @@ class CronService {
   // ========================================
   // UNIFIED CUTOFF: Auto-assign default meals
   // ========================================
-  // ✅ Cutoff at 11:00 PM
+  // ✅ Cutoff at 8:30 PM IST (TEMPORARY for testing)
   // ✅ After cutoff → meals assigned for TOMORROW
-  // Run at 11:05 PM IST (5 minutes after cutoff)
+  // Run at 8:35 PM IST (5 minutes after cutoff)
   autoAssignDefaultMeals() {
-    // Run at 11:05 PM IST every day (cron: minute hour * * * *)
-    // 5 23 = 11:05 PM
+    // Run at 8:35 PM IST every day (cron: minute hour * * * *)
+    // 35 20 = 8:35 PM
     const defaultMealsJob = cron.schedule('35 20 * * *', async () => {
       const jobName = 'Auto-assign Default Meals (Lunch & Dinner)';
 
@@ -293,15 +293,15 @@ class CronService {
       logger.info('📋 Assigns defaults for EFFECTIVE DELIVERY DATE (tomorrow)');
 
       try {
-        // ✅ CRITICAL: Cron runs at 11:05 PM IST (5-minute buffer after cutoff).
+        // ✅ CRITICAL: Cron runs at 8:35 PM IST (5-minute buffer after cutoff).
         // Target = TOMORROW (today + 1 day in IST).
         // MUST use getTodayIST().add(1,'day') — NOT getNextOrderableDate()
-        // because getNextOrderableDate() returns day+2 when called after 11 PM.
+        // because getNextOrderableDate() returns day+2 when called after cutoff.
         // normaliseDeliveryDate() guarantees IST start-of-day → UTC for DB keys.
         const effectiveDate    = getTodayIST().add(1, 'day');          // moment (IST) — for logging
         const targetDeliveryDate = normaliseDeliveryDate(effectiveDate); // Date (UTC)    — for DB ops
         logger.info(`\n📅 Target Date: ${effectiveDate.format('YYYY-MM-DD (dddd)')}`);
-        logger.info(`   Explanation: 11:05 PM cron — assigning defaults for TOMORROW`);
+        logger.info(`   Explanation: 8:35 PM cron — assigning defaults for TOMORROW`);
 
         // ✅ BUG 1 FIX: Guard — skip if restaurant is globally closed or closed for this date
         const restaurantStatus = await RestaurantStatus.findOne();
@@ -330,9 +330,23 @@ class CronService {
         logger.info(`✅ Dinner: ${dinnerCount} defaults assigned`);
 
         await SystemSetting.setValue('lastCronRun', nowIST().toDate(), 'Last cron run timestamp', 'cron-service');
+
+        // ========================================
+        // PRODUCTION FIX: Emit ONLY ONE dashboard refresh event
+        // After cron completes, notify owner to refresh ONCE
+        // ========================================
+        socketService.emitToOwners('dashboard_refresh_required', {
+          reason: 'cron-default-assignment',
+          targetDate: effectiveDate.format('YYYY-MM-DD'),
+          lunchCount,
+          dinnerCount,
+          totalCount: lunchCount + dinnerCount
+        });
+
         logger.info(`\n${'='.repeat(60)}`);
         logger.success(`${jobName} completed successfully`);
         logger.info(`Total: ${lunchCount + dinnerCount} default meals assigned`);
+        logger.info(`📤 Emitted single dashboard_refresh_required event`);
         logger.info(`${'='.repeat(60)}\n`);
       } catch (error) {
         logger.error(`${jobName} failed`, error);
@@ -392,7 +406,7 @@ class CronService {
           // ========================================
           // UNIFIED CUTOFF TIME (BOTH MEALS)
           // ========================================
-          // Cutoff is 11:00 PM IST on the day BEFORE delivery — dateService is authoritative
+          // Cutoff is 8:30 PM IST on the day BEFORE delivery — dateService is authoritative
           const cutoffTime = getCutoffForDeliveryDate(deliveryDate);
 
           // ========================================
@@ -435,23 +449,8 @@ class CronService {
           if (!result) {
             assignedCount++;
             logger.info(`   ✅ Created: ${subscription.user.name} - ${defaultMealName}`);
-
-            // ========================================
-            // EMIT SOCKET EVENT FOR REAL-TIME SYNC
-            // ========================================
-            // Broadcast to owner dashboard and kitchen screens
-            socketService.emitMealUpdated({
-              user: subscription.user._id,
-              deliveryDate: deliveryDate,
-              mealType: mealType,
-              selectedMeal: {
-                name: defaultMealName,
-                isDefault: true
-              },
-              customerName: subscription.user.name,
-              customerId: subscription.user.userId,
-              source: 'cron-auto-assign'
-            });
+            // NOTE: Per-user socket emit REMOVED - cron must NOT emit per-user UI events
+            // Production fix: emit only ONE event after cron completes (see autoAssignDefaultMeals)
           } else {
             skippedCount++;
             logger.debug(`   ⏭️  Skipped: ${subscription.user.name} (already selected)`);
