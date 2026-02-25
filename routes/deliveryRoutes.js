@@ -4,6 +4,7 @@ const {
   createDelivery,
   updateDeliveryStatus,
   updateDeliveryByUser,
+  updateMealStatus,
   getTodaysDeliveries,
   getUserDeliveries,
   getMyDeliveries,
@@ -31,5 +32,7 @@ router.get('/my-today', protect, authorize('customer'), getMyTodayDelivery);
 router.get('/user/:userId', protect, getUserDeliveries);
 router.get('/:id', protect, getDelivery);
 router.patch('/:id/status', protect, authorize('owner', 'delivery'), updateDeliveryStatus);
+// Per-meal status update (primary endpoint for owner delivery screen)
+router.patch('/:id/meal-status', protect, authorize('owner', 'delivery'), updateMealStatus);
 
 module.exports = router;

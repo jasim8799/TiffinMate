@@ -25,6 +25,17 @@ const deliverySchema = new mongoose.Schema({
     enum: ['preparing', 'on-the-way', 'delivered', 'paused', 'disabled'],
     default: 'preparing'
   },
+  // ── Per-meal statuses (owned by API, never by time) ──────────────────────
+  lunchStatus: {
+    type: String,
+    enum: ['preparing', 'on-the-way', 'delivered', 'paused'],
+    default: 'preparing'
+  },
+  dinnerStatus: {
+    type: String,
+    enum: ['preparing', 'on-the-way', 'delivered', 'paused'],
+    default: 'preparing'
+  },
   deliveryBoy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
@@ -94,6 +105,69 @@ deliverySchema.methods.updateStatus = async function(newStatus) {
 };
 
 // REMOVED: getDeliveryStatus() — time-based auto-override is prohibited.
-// Status ONLY changes via owner action through updateStatus().
+// Status ONLY changes via owner action through updateStatus() / updateMealStatus().
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Derive the overall delivery status from per-meal statuses.
+// Rules:
+//   both delivered            → 'delivered'
+//   any on-the-way            → 'on-the-way'
+//   any preparing             → 'preparing'
+//   both paused               → 'paused'
+// This is called automatically by updateMealStatus().
+// ─────────────────────────────────────────────────────────────────────────────
+deliverySchema.statics.computeDerivedStatus = function(lunchStatus, dinnerStatus, mealType) {
+  const statuses = [];
+  if (mealType === 'lunch' || mealType === 'both') statuses.push(lunchStatus || 'preparing');
+  if (mealType === 'dinner' || mealType === 'both') statuses.push(dinnerStatus || 'preparing');
+  if (statuses.length === 0) return 'preparing';
+  if (statuses.every(s => s === 'delivered')) return 'delivered';
+  if (statuses.some(s => s === 'on-the-way')) return 'on-the-way';
+  if (statuses.some(s => s === 'preparing')) return 'preparing';
+  if (statuses.every(s => s === 'paused')) return 'paused';
+  return 'preparing';
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Update the status for a specific meal type and recompute the derived status.
+// mealType must be 'lunch' or 'dinner'.
+// newStatus must be one of: preparing | on-the-way | delivered | paused
+// ─────────────────────────────────────────────────────────────────────────────
+deliverySchema.methods.updateMealStatus = async function(mealType, newStatus) {
+  const allowedStatuses = ['preparing', 'on-the-way', 'delivered', 'paused'];
+  if (!allowedStatuses.includes(newStatus)) {
+    throw new Error(`Invalid status: "${newStatus}". Allowed: ${allowedStatuses.join(', ')}`);
+  }
+  if (!['lunch', 'dinner'].includes(mealType)) {
+    throw new Error(`mealType must be "lunch" or "dinner", got: "${mealType}"`);
+  }
+
+  // Apply per-meal status
+  if (mealType === 'lunch') this.lunchStatus = newStatus;
+  if (mealType === 'dinner') this.dinnerStatus = newStatus;
+
+  // Timestamp housekeeping
+  if (newStatus === 'preparing' && !this.preparingStartTime) {
+    this.preparingStartTime = new Date();
+  }
+  if (newStatus === 'on-the-way' && !this.outForDeliveryTime) {
+    this.outForDeliveryTime = new Date();
+    if (!this.estimatedDeliveryTime) {
+      this.estimatedDeliveryTime = new Date(Date.now() + 60 * 60 * 1000);
+    }
+  }
+  if (newStatus === 'delivered') {
+    this.deliveredTime = new Date();
+  }
+
+  // Derive and write overall status
+  this.status = this.constructor.computeDerivedStatus(
+    this.lunchStatus,
+    this.dinnerStatus,
+    this.mealType
+  );
+
+  return this.save();
+};
 
 module.exports = mongoose.model('Delivery', deliverySchema);

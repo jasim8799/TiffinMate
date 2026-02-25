@@ -892,3 +892,114 @@ exports.updateDeliveryByUser = async (req, res) => {
     res.status(500).json({ success: false, message: 'Error updating delivery status', error: error.message });
   }
 };
+
+// ============================================================
+// PER-MEAL STATUS UPDATE
+// ============================================================
+// @desc    Update status for a specific meal (lunch OR dinner) on a delivery
+// @route   PATCH /api/deliveries/:id/meal-status
+// @access  Private (Owner only)
+//
+// Body: { mealType: 'lunch'|'dinner', status: 'preparing'|'on-the-way'|'delivered'|'paused' }
+//
+// This is the PRIMARY status update endpoint for the owner delivery screen.
+// It updates lunchStatus / dinnerStatus independently and derives the overall
+// delivery.status automatically via Delivery.computeDerivedStatus().
+// Only ONE socket event is emitted per call — delivery_status_updated.
+// ============================================================
+exports.updateMealStatus = async (req, res) => {
+  try {
+    const { mealType, status } = req.body;
+
+    // ── Validate inputs ──────────────────────────────────────────
+    const allowedMealTypes = ['lunch', 'dinner'];
+    const allowedStatuses  = ['preparing', 'on-the-way', 'delivered', 'paused'];
+
+    if (!allowedMealTypes.includes(mealType)) {
+      return res.status(400).json({
+        success: false,
+        message: `mealType must be "lunch" or "dinner", got: "${mealType}"`,
+      });
+    }
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status "${status}". Allowed: ${allowedStatuses.join(', ')}`,
+      });
+    }
+
+    const delivery = await Delivery.findById(req.params.id)
+      .populate('user', 'name mobile role')
+      .populate('subscription');
+
+    if (!delivery) {
+      return res.status(404).json({ success: false, message: 'Delivery not found' });
+    }
+
+    // Guard: the delivery must cover the requested mealType
+    if (delivery.mealType !== 'both' && delivery.mealType !== mealType) {
+      return res.status(400).json({
+        success: false,
+        message: `This delivery covers "${delivery.mealType}" only — cannot update "${mealType}"`,
+      });
+    }
+
+    // ── Enforce state machine per meal ───────────────────────────
+    const currentMealStatus = mealType === 'lunch'
+      ? (delivery.lunchStatus || 'preparing')
+      : (delivery.dinnerStatus || 'preparing');
+
+    // No-op guard
+    if (currentMealStatus === status) {
+      return res.status(200).json({
+        success: true,
+        message: `${mealType} is already "${status}" — no update needed`,
+        data: delivery,
+      });
+    }
+
+    try {
+      DeliveryStateMachine.validateTransition(currentMealStatus, status);
+    } catch (transitionError) {
+      return res.status(400).json({
+        success: false,
+        message: transitionError.message,
+        allowedNext: DeliveryStateMachine.nextAllowedStatuses(currentMealStatus),
+      });
+    }
+
+    // ── Apply per-meal update (derives overall status automatically) ─
+    await delivery.updateMealStatus(mealType, status);
+    await delivery.populate('user');
+
+    // markDayUsed when fully delivered
+    if (delivery.status === 'delivered' && delivery.subscription) {
+      try { await delivery.subscription.markDayUsed(); } catch (_) { /* non-fatal */ }
+    }
+
+    // ── Send notifications (SMS + AppNotification) ───────────────
+    try { await notifyDeliveryStatus(delivery, status); } catch (_) { /* non-fatal */ }
+
+    // ── Single authoritative socket emission ─────────────────────
+    socketService.emitDeliveryStatusUpdated({
+      deliveryId:   delivery._id,
+      userId:       delivery.user._id,
+      userName:     delivery.user.name,
+      mealType,                          // which meal was updated
+      status:       delivery.status,     // derived overall status
+      lunchStatus:  delivery.lunchStatus,
+      dinnerStatus: delivery.dinnerStatus,
+      deliveryDate: delivery.deliveryDate,
+      updatedAt:    new Date(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `${mealType} status updated to "${status}" successfully`,
+      data: delivery,
+    });
+  } catch (error) {
+    console.error('updateMealStatus error:', error);
+    res.status(500).json({ success: false, message: 'Error updating meal status', error: error.message });
+  }
+};

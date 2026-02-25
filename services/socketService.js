@@ -471,8 +471,10 @@ class SocketService {
       deliveryId:   data.deliveryId,
       userId:       data.userId,
       userName:     data.userName,
-      status:       data.status,   // always lowercase: preparing | on-the-way | delivered | paused
-      mealType:     data.mealType,
+      mealType:     data.mealType,      // which meal was updated ('lunch'|'dinner'|null)
+      status:       data.status,        // derived overall: preparing|on-the-way|delivered|paused
+      lunchStatus:  data.lunchStatus,   // per-meal (may be undefined for legacy calls)
+      dinnerStatus: data.dinnerStatus,  // per-meal (may be undefined for legacy calls)
       deliveryDate: data.deliveryDate,
       updatedAt:    data.updatedAt,
       eventId,
