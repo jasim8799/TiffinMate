@@ -282,61 +282,9 @@ class SocketService {
     });
   }
 
-  // ========== COOKING & DELIVERY EVENTS ==========
-
-  emitCookingStarted(deliveryData) {
-    console.log('📢 Broadcasting: cooking_started', deliveryData._id);
-
-    // Notify the specific user
-    this.safeEmit('cooking_started', `user:${deliveryData.user}`, {
-      delivery: deliveryData,
-      timestamp: new Date()
-    });
-  }
-
-  emitOutForDelivery(deliveryData) {
-    console.log('📢 Broadcasting: out_for_delivery', deliveryData._id);
-
-    // Notify the specific user
-    this.safeEmit('out_for_delivery', `user:${deliveryData.user}`, {
-      delivery: deliveryData,
-      timestamp: new Date()
-    });
-  }
-
-  emitDelivered(deliveryData) {
-    console.log('📢 Broadcasting: delivered', deliveryData._id);
-
-    // Notify the specific user
-    this.safeEmit('delivered', `user:${deliveryData.user}`, {
-      delivery: deliveryData,
-      timestamp: new Date()
-    });
-
-    // Notify all owners (for tracking)
-    this.safeEmit('delivered', 'owners', {
-      delivery: deliveryData,
-      timestamp: new Date()
-    });
-  }
-
-  emitDeliveryStatusUpdated(deliveryData) {
-    console.log('📢 Broadcasting: delivery_status_updated', deliveryData._id);
-
-    // Notify the specific user
-    this.safeEmit('delivery_status_updated', `user:${deliveryData.user}`, {
-      delivery: deliveryData,
-      timestamp: new Date()
-    });
-
-    // Notify all owners
-    this.safeEmit('delivery_status_updated', 'owners', {
-      delivery: deliveryData,
-      timestamp: new Date()
-    });
-  }
-
   // ========== PAYMENT EVENTS ==========
+  // NOTE: emitCookingStarted / emitOutForDelivery / emitDelivered removed.
+  // All delivery socket events go through emitDeliveryStatusUpdated() below.
 
   emitPaymentCreated(paymentData) {
     console.log('📢 Broadcasting: payment_created', paymentData._id);
@@ -511,12 +459,22 @@ class SocketService {
    * Also notifies the owners room so dashboard updates.
    * @param {{ deliveryId, userId, userName?, status, mealType, deliveryDate, updatedAt }} data
    */
+  /**
+   * Single authoritative delivery status event.
+   * Payload contains only lowercase status — no uppercase mirrors.
+   * @param {{ deliveryId, userId, userName?, status, mealType, deliveryDate, updatedAt }} data
+   */
   emitDeliveryStatusUpdated(data) {
-    console.log(`📢 delivery_status_updated → user:${data.userId} & owners`);
+    console.log(`📢 delivery_status_updated → user:${data.userId} (${data.status})`);
     const eventId = `delivery_${data.deliveryId}_${Date.now()}`;
     const payload = {
-      ...data,
-      deliveryStatus: data.status, // ✅ BUG 3 FIX: mirror field for frontend compat
+      deliveryId:   data.deliveryId,
+      userId:       data.userId,
+      userName:     data.userName,
+      status:       data.status,   // always lowercase: preparing | on-the-way | delivered | paused
+      mealType:     data.mealType,
+      deliveryDate: data.deliveryDate,
+      updatedAt:    data.updatedAt,
       eventId,
       timestamp: new Date(),
     };
