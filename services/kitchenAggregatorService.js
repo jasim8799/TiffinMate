@@ -1,6 +1,6 @@
 /**
  * ============================================================
- * KITCHEN AGGREGATOR SERVICE — FULL PRODUCTION VERSION
+ * KITCHEN AGGREGATOR SERVICE — OPTIMIZED VERSION
  * ============================================================
  *
  * Provides accurate meal counts, veg/non-veg split,
@@ -9,6 +9,11 @@
  *
  * SOURCE OF TRUTH: MealOrder collection.
  * (NOT the Delivery collection, which tracks delivery logistics only.)
+ *
+ * PERFORMANCE OPTIMIZATION:
+ * - Query MealOrders FIRST by deliveryDate range only (uses index)
+ * - Then query User/Subscription ONLY for relevant userIds
+ * - No large $in queries on full user collections
  *
  * RULES:
  *  - Filter by deliveryDate range (IST day bounds → UTC)
@@ -23,6 +28,7 @@
 
 'use strict';
 
+const mongoose    = require('mongoose');
 const MealOrder   = require('../models/MealOrder');
 const Subscription = require('../models/Subscription');
 const User        = require('../models/User');
@@ -78,27 +84,10 @@ async function aggregateKitchenData(targetDate) {
 
   const { startUTC, nextDayStartUTC } = getISTDayBounds(dateMoment.toDate());
 
-  // ── 1. Active user IDs (exclude deactivated + deleted) ──────────
-  const activeUserIds = await User.find({
-    role:      'customer',
-    isActive:  true,
-    deletedAt: { $exists: false },
-  }).distinct('_id');
-
-  // ── 2. Paused user IDs for this date ────────────────────────────
-  //    (subscriptions that are paused on this delivery date)
-  const pausedSubUserIds = await Subscription.find({
-    user:   { $in: activeUserIds },
-    status: 'paused',
-  }).distinct('user');
-
-  // ── 3. IDs to exclude ───────────────────────────────────────────
-  const excludedUserIdSet = new Set(pausedSubUserIds.map(id => id.toString()));
-
-  // ── 4. Query MealOrders ─────────────────────────────────────────
+  // ── 1. FIRST: Query MealOrders by deliveryDate range ONLY ───────
+  // This uses the new idx_kitchen_aggregation index - no user filter needed
   const orders = await MealOrder.find({
     deliveryDate: { $gte: startUTC, $lt: nextDayStartUTC },
-    user:         { $in: activeUserIds },
     status:       { $ne: 'cancelled' },
     'selectedMeal.isSkip': { $ne: true },
   })
@@ -106,7 +95,54 @@ async function aggregateKitchenData(targetDate) {
     .populate('subscription', 'status planType planCategory')
     .lean();
 
-  // ── 5. Build report ─────────────────────────────────────────────
+  // ── 2. Extract unique userIds from orders ────────────────────────
+  const orderUserIds = [...new Set(
+    orders
+      .map(o => o.user?._id)
+      .filter(Boolean)
+      .map(id => id.toString())
+  )];
+
+  // Early return if no orders
+  if (orderUserIds.length === 0) {
+    return {
+      date:       dateMoment.format('YYYY-MM-DD'),
+      dateDisplay: dateMoment.format('dddd, MMMM D YYYY'),
+      totalOrders: 0,
+      lunch: buildMealBucket(),
+      dinner: buildMealBucket(),
+      userMealDetails: [],
+      ingredientSummary: {},
+    };
+  }
+
+  // ── 3. Query User collection ONLY for those userIds ─────────────
+  const userIdObjs = orderUserIds.map(id => mongoose.Types.ObjectId.createFromHexString(id));
+  
+  const activeUsers = await User.find({
+    _id:       { $in: userIdObjs },
+    role:      'customer',
+    isActive:  true,
+    deletedAt: { $exists: false },
+  }).select('_id');
+
+  const activeUserIdSet = new Set(activeUsers.map(u => u._id.toString()));
+
+  // ── 4. Query Subscription ONLY for those userIds ────────────────
+  const pausedSubscriptions = await Subscription.find({
+    user:   { $in: userIdObjs },
+    status: 'paused',
+  }).select('user');
+
+  const pausedUserIdSet = new Set(pausedSubscriptions.map(s => s.user.toString()));
+
+  // ── 5. Combined exclusion set ───────────────────────────────────
+  const excludedUserIdSet = new Set([
+    ...orderUserIds.filter(id => !activeUserIdSet.has(id)), // Not active users
+    ...pausedUserIdSet, // Paused subscriptions
+  ]);
+
+  // ── 6. Build report ─────────────────────────────────────────────
   const report = {
     date:       dateMoment.format('YYYY-MM-DD'),
     dateDisplay: dateMoment.format('dddd, MMMM D YYYY'),
@@ -169,7 +205,7 @@ async function aggregateKitchenData(targetDate) {
     });
   }
 
-  // ── 6. Sort ingredient summaries descending ─────────────────────
+  // ── 7. Sort ingredient summaries descending ─────────────────────
   report.ingredientSummary    = sortDescending(report.ingredientSummary);
   report.lunch.ingredientSummary  = sortDescending(report.lunch.ingredientSummary);
   report.dinner.ingredientSummary = sortDescending(report.dinner.ingredientSummary);
