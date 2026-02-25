@@ -79,6 +79,16 @@ mealOrderSchema.index(
   }
 );
 
+// ========================================
+// PERFORMANCE INDEX: User + DeliveryDate range queries
+// ========================================
+// Optimizes: GET /api/meals/my-selection?offset=0
+// Query: MealOrder.find({ user, deliveryDate: { $gte: start, $lte: end } })
+mealOrderSchema.index(
+  { user: 1, deliveryDate: 1 },
+  { name: 'idx_user_deliveryDate' }
+);
+
 // Chaos mode removed - was causing production timeouts
 
 // Method to check if order is after cutoff
