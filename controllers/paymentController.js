@@ -9,6 +9,7 @@ const { getUserMutex } = require('../utils/userMutex');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const { activateOrExtendSubscription } = require('../utils/subscriptionUtils');
+const { getDeliveryDateForTab, getNextOrderableDate, getCutoffForDeliveryDate, getISTDayRange } = require('../utils/dateService');
 
 /**
  * PAYMENT STATUS DEFINITIONS (IMPORTANT)
@@ -55,8 +56,7 @@ function normalizeDailyMeal(meal) {
 // Helper function to create daily meal orders from payment metadata (FIXED)
 async function createDailyMealOrdersFromPayment(payment) {
   const MealOrder = require('../models/MealOrder');
-  const { getISTDayRange, getCutoffTimeForDate } = require('../utils/deliveryDateHelper');
-
+  
   if (!['paid', 'verified'].includes(payment.status)) return;
 
   const { lunch, dinner, pricePerMeal } = payment.metadata || {};
@@ -81,7 +81,7 @@ async function createDailyMealOrdersFromPayment(payment) {
           paymentId: payment._id,
           status: 'confirmed',
           orderDate: new Date(),
-          cutoffTime: getCutoffTimeForDate(start)
+          cutoffTime: getCutoffForDeliveryDate(start)
         }
       },
       { upsert: true }
@@ -103,7 +103,7 @@ async function createDailyMealOrdersFromPayment(payment) {
           paymentId: payment._id,
           status: 'confirmed',
           orderDate: new Date(),
-          cutoffTime: getCutoffTimeForDate(start)
+          cutoffTime: getCutoffForDeliveryDate(start)
         }
       },
       { upsert: true }
@@ -655,15 +655,14 @@ exports.createPayment = async (req, res) => {
         });
       }
 
-      const deliveryDate = require('../utils/deliveryDateHelper').getDeliveryDateByOffset(0).toDate();
-      const { start, end } = require('../utils/deliveryDateHelper').getISTDayRange(deliveryDate);
+      const deliveryDate = getDeliveryDateForTab(1).toDate();
+      const { start, end } = getISTDayRange(deliveryDate);
 
       // ✅ GLOBAL RESTAURANT CLOSE GUARD — block daily meal payment when restaurant is closed
       {
         const RestaurantStatus = require('../models/RestaurantStatus');
         const momentTz = require('moment-timezone');
-        const { getNextOrderableDeliveryMoment } = require('../utils/deliveryDateHelper');
-        const restaurantStatus = await RestaurantStatus.findOne();
+                const restaurantStatus = await RestaurantStatus.findOne();
         if (restaurantStatus) {
           if (restaurantStatus.isOpen === false) {
             return res.status(403).json({
@@ -673,7 +672,7 @@ exports.createPayment = async (req, res) => {
           }
           if (restaurantStatus.closedDate) {
             const closedDay = momentTz.tz(restaurantStatus.closedDate, 'Asia/Kolkata').startOf('day');
-            const effectiveDay = getNextOrderableDeliveryMoment().startOf('day');
+            const effectiveDay = getNextOrderableDate().startOf('day');
             if (closedDay.isSame(effectiveDay, 'day')) {
               return res.status(403).json({
                 success: false,
@@ -775,7 +774,7 @@ exports.createPayment = async (req, res) => {
       query.year = currentYear;
       query.subscription = subscriptionId;
     } else if (paymentFor === 'daily_meal') {
-      query.deliveryDate = require('../utils/deliveryDateHelper').getDeliveryDateByOffset(0).toDate();
+      query.deliveryDate = getDeliveryDateForTab(1).toDate();
     }
 
     const existingPayment = await Payment.findOne(query);

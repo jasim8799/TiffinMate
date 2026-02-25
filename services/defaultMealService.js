@@ -1,7 +1,7 @@
 const MealOrder = require('../models/MealOrder');
 const Subscription = require('../models/Subscription');
 const { getActiveUserIds } = require('../utils/activeUserHelper');
-const { getISTDayRange, getCutoffTimeForDate } = require('../utils/deliveryDateHelper');
+const { getISTDayRange, getCutoffForDeliveryDate } = require('../utils/dateService');
 const socketService = require('./socketService');
 const moment = require('moment-timezone');
 const logger = require('../utils/logger');
@@ -73,7 +73,7 @@ async function ensureDefaultMealsForDate(deliveryDate) {
                 items: [],
                 isDefault: true
               },
-              cutoffTime: getCutoffTimeForDate(deliveryDate),
+              cutoffTime: getCutoffForDeliveryDate(deliveryDate),
               isAfterCutoff: true,
               status: 'confirmed',
               createdBy: 'auto-default'
@@ -125,7 +125,7 @@ async function ensureDefaultMealsForDate(deliveryDate) {
                 items: [],
                 isDefault: true
               },
-              cutoffTime: getCutoffTimeForDate(deliveryDate),
+              cutoffTime: getCutoffForDeliveryDate(deliveryDate),
               isAfterCutoff: true,
               status: 'confirmed',
               createdBy: 'auto-default'

@@ -12,7 +12,7 @@ const socketService = require('./socketService');
 const logger = require('../utils/logger');
 const moment = require('moment-timezone');
 const { getActiveUserIds } = require('../utils/activeUserHelper');
-const { getNextOrderableDeliveryMoment } = require('../utils/deliveryDateHelper');
+const { getTodayIST, normaliseDeliveryDate, getCutoffForDeliveryDate, CUTOFF_HOUR, CUTOFF_MINUTE } = require('../utils/dateService');
 
 // Helper function to get current IST time
 const nowIST = () => {
@@ -277,7 +277,7 @@ class CronService {
   autoAssignDefaultMeals() {
     // Run at 11:05 PM IST every day (cron: minute hour * * * *)
     // 5 23 = 11:05 PM
-    const defaultMealsJob = cron.schedule('5 23 * * *', async () => {
+    const defaultMealsJob = cron.schedule('35 20 * * *', async () => {
       const jobName = 'Auto-assign Default Meals (Lunch & Dinner)';
 
       // Check cron run guard
@@ -288,14 +288,18 @@ class CronService {
       logger.info(`Running: ${jobName}`);
       logger.info(`Time: ${now.format('YYYY-MM-DD HH:mm:ss z')}`);
       logger.info(`${'='.repeat(60)}`);
-      logger.info('⎰ UNIFIED_CUTOFF_TIME = 11:00 PM (23:00) IST');
-      logger.info('🤖 Cron executes at 11:05 PM (5-minute buffer after cutoff)');
+      logger.info(`⎰ UNIFIED_CUTOFF_TIME = ${CUTOFF_HOUR}:${CUTOFF_MINUTE} IST`);
+      logger.info('🤖 Cron executes at 8:35 PM (5-minute buffer after cutoff)');
       logger.info('📋 Assigns defaults for EFFECTIVE DELIVERY DATE (tomorrow)');
 
       try {
-        // ✅ FIX: Cron runs at 11:05 PM — cutoff just passed for TOMORROW.
-        // Use explicit tomorrow (not getNextOrderableDeliveryMoment which returns day+2 after 11 PM).
-        const effectiveDate = nowIST().startOf('day').add(1, 'day');
+        // ✅ CRITICAL: Cron runs at 11:05 PM IST (5-minute buffer after cutoff).
+        // Target = TOMORROW (today + 1 day in IST).
+        // MUST use getTodayIST().add(1,'day') — NOT getNextOrderableDate()
+        // because getNextOrderableDate() returns day+2 when called after 11 PM.
+        // normaliseDeliveryDate() guarantees IST start-of-day → UTC for DB keys.
+        const effectiveDate    = getTodayIST().add(1, 'day');          // moment (IST) — for logging
+        const targetDeliveryDate = normaliseDeliveryDate(effectiveDate); // Date (UTC)    — for DB ops
         logger.info(`\n📅 Target Date: ${effectiveDate.format('YYYY-MM-DD (dddd)')}`);
         logger.info(`   Explanation: 11:05 PM cron — assigning defaults for TOMORROW`);
 
@@ -308,7 +312,7 @@ class CronService {
           }
           if (restaurantStatus.closedDate) {
             const closedDay = moment.tz(restaurantStatus.closedDate, 'Asia/Kolkata').startOf('day');
-            if (closedDay.isSame(effectiveDate.clone().startOf('day'), 'day')) {
+            if (closedDay.isSame(effectiveDate, 'day')) {
               logger.info('⏭️ Restaurant is closed for delivery date — skipping default meal assignment');
               return;
             }
@@ -317,12 +321,12 @@ class CronService {
 
         // Assign lunch defaults
         logger.info('\n🍱 Assigning LUNCH defaults...');
-        const lunchCount = await this.assignDefaultMealsForType(effectiveDate.toDate(), 'lunch');
+        const lunchCount = await this.assignDefaultMealsForType(targetDeliveryDate, 'lunch');
         logger.info(`✅ Lunch: ${lunchCount} defaults assigned`);
 
         // Assign dinner defaults
         logger.info('\n🍽️  Assigning DINNER defaults...');
-        const dinnerCount = await this.assignDefaultMealsForType(effectiveDate.toDate(), 'dinner');
+        const dinnerCount = await this.assignDefaultMealsForType(targetDeliveryDate, 'dinner');
         logger.info(`✅ Dinner: ${dinnerCount} defaults assigned`);
 
         await SystemSetting.setValue('lastCronRun', nowIST().toDate(), 'Last cron run timestamp', 'cron-service');
@@ -388,9 +392,8 @@ class CronService {
           // ========================================
           // UNIFIED CUTOFF TIME (BOTH MEALS)
           // ========================================
-          // Cutoff is 11:00 PM on the day BEFORE delivery
-          const deliveryMoment = moment.tz(deliveryDate, 'Asia/Kolkata');
-          const cutoffTime = deliveryMoment.clone().subtract(1, 'day').hour(23).minute(0).second(0).millisecond(0);
+          // Cutoff is 11:00 PM IST on the day BEFORE delivery — dateService is authoritative
+          const cutoffTime = getCutoffForDeliveryDate(deliveryDate);
 
           // ========================================
           // DUPLICATE PROTECTION: UPSERT ONLY

@@ -11,8 +11,8 @@
  *     Use functions from this module instead.
  *
  * CUTOFF RULE:
- *  Meals can be selected until 11:00 PM IST on the day BEFORE delivery.
- *  After 11 PM IST → tomorrow becomes locked, next day opens.
+ *  Meals can be selected until 8:30 PM IST on the day BEFORE delivery.
+ *  After 8:30 PM IST → tomorrow becomes locked, next day opens.
  *
  * MIDNIGHT RULE (Phase 3):
  *  At 00:00 IST tabs simply change their date filter.
@@ -25,7 +25,8 @@
 const moment = require('moment-timezone');
 
 const IST = 'Asia/Kolkata';
-const CUTOFF_HOUR = 23; // 11 PM IST
+const CUTOFF_HOUR = 20;    // 8 PM IST
+const CUTOFF_MINUTE = 30;  // 30 minutes
 
 // ─────────────────────────────────────────────
 // CORE IST HELPERS
@@ -90,7 +91,7 @@ function convertISTToUTC(istDate) {
 
 /**
  * Returns the cutoff moment for a given delivery date.
- * Cutoff = 11:00 PM IST the day BEFORE the delivery date.
+ * Cutoff = 8:30 PM IST the day BEFORE the delivery date.
  *
  * @param {Date|string|moment.Moment} deliveryDate
  * @returns {moment.Moment} Cutoff time in IST
@@ -100,13 +101,13 @@ function getCutoffForDeliveryDate(deliveryDate) {
     .tz(deliveryDate, IST)
     .subtract(1, 'day')
     .hour(CUTOFF_HOUR)
-    .minute(0)
+    .minute(CUTOFF_MINUTE)
     .second(0)
     .millisecond(0);
 }
 
 /**
- * Returns the UTC Date of tonight's cutoff (11 PM IST today).
+ * Returns the UTC Date of tonight's cutoff (8:30 PM IST today).
  * Used for CRON and server-side guard checks.
  * @returns {Date}
  */
@@ -114,19 +115,19 @@ function getCutoffTimeUTC() {
   return moment
     .tz(IST)
     .hour(CUTOFF_HOUR)
-    .minute(0)
+    .minute(CUTOFF_MINUTE)
     .second(0)
     .millisecond(0)
     .toDate();
 }
 
 /**
- * Returns true if the current IST time is past the 11 PM cutoff.
+ * Returns true if the current IST time is past the 8:30 PM cutoff.
  * @returns {boolean}
  */
 function isCutoffPassed() {
   const now = getISTNow();
-  const cutoff = now.clone().hour(CUTOFF_HOUR).minute(0).second(0).millisecond(0);
+  const cutoff = now.clone().hour(CUTOFF_HOUR).minute(CUTOFF_MINUTE).second(0).millisecond(0);
   return now.isSameOrAfter(cutoff);
 }
 
@@ -137,8 +138,8 @@ function isCutoffPassed() {
 /**
  * Returns the NEXT ORDERABLE delivery date.
  *
- * Before 11 PM IST → tomorrow
- * After  11 PM IST → day after tomorrow
+ * Before 8:30 PM IST → tomorrow
+ * After  8:30 PM IST → day after tomorrow
  *
  * This is what the USER selects for.
  *
@@ -146,7 +147,7 @@ function isCutoffPassed() {
  */
 function getNextOrderableDate() {
   const now = getISTNow();
-  const cutoff = now.clone().hour(CUTOFF_HOUR).minute(0).second(0).millisecond(0);
+  const cutoff = now.clone().hour(CUTOFF_HOUR).minute(CUTOFF_MINUTE).second(0).millisecond(0);
   if (now.isBefore(cutoff)) {
     return now.clone().startOf('day').add(1, 'day');
   }
@@ -192,6 +193,24 @@ function normaliseDeliveryDate(date) {
   return moment.tz(date, IST).startOf('day').toDate();
 }
 
+/**
+ * Returns IST day boundaries as { start, end } for backward-compatible range queries.
+ * start = IST start-of-day UTC (inclusive, use with $gte)
+ * end   = IST end-of-day UTC   (inclusive, use with $lte)
+ *
+ * Prefer getISTDayBounds() for new code (uses $lt nextDayStart instead of $lte endOfDay).
+ * This alias exists to support existing queries without semantic change.
+ *
+ * @param {Date|string|moment.Moment} [date]
+ * @returns {{ start: Date, end: Date }}
+ */
+function getISTDayRange(date) {
+  const m = date ? moment.tz(date, IST) : moment.tz(IST);
+  const start = m.clone().startOf('day').toDate();
+  const end   = m.clone().endOf('day').toDate();
+  return { start, end };
+}
+
 // ─────────────────────────────────────────────
 // DATE FORMATTING
 // ─────────────────────────────────────────────
@@ -221,10 +240,12 @@ function formatIST(date, fmt = 'YYYY-MM-DD HH:mm:ss') {
 module.exports = {
   IST,
   CUTOFF_HOUR,
+  CUTOFF_MINUTE,
   getISTNow,
   getISTStartOfDay,
   getISTNextDayStart,
   getISTDayBounds,
+  getISTDayRange,
   convertISTToUTC,
   getCutoffForDeliveryDate,
   getCutoffTimeUTC,

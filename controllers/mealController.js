@@ -11,7 +11,7 @@ const mongoose = require('mongoose');
 const { createNotification } = require('./notificationController');
 const User = require('../models/User');
 const { getActiveUserIds } = require('../utils/activeUserHelper');
-const { getDeliveryDateByOffset, getNextOrderableDeliveryMoment, getCutoffTimeForDate, getISTDayRange } = require('../utils/deliveryDateHelper');
+const { getDeliveryDateForTab, getNextOrderableDate, getCutoffForDeliveryDate, getISTDayRange } = require('../utils/dateService');
 const { ensureDefaultMealsForDate } = require('../services/defaultMealService');
 
 // =========================================================
@@ -297,7 +297,7 @@ exports.selectMeal = async (req, res) => {
       // ✅ BUG 2 FIX: Check date-scoped close
       if (restaurantStatus.closedDate) {
         const closedDay = moment.tz(restaurantStatus.closedDate, 'Asia/Kolkata').startOf('day');
-        const effectiveDay = getNextOrderableDeliveryMoment().startOf('day');
+        const effectiveDay = getNextOrderableDate().startOf('day');
         if (closedDay.isSame(effectiveDay, 'day')) {
           return res.status(403).json({
             success: false,
@@ -330,9 +330,9 @@ exports.selectMeal = async (req, res) => {
     // ========================================
     // KITCHEN-CENTRIC DELIVERY DATE LOGIC
     // ========================================
-    // Backend is single source of truth - always use getNextOrderableDeliveryMoment()
+    // Backend is single source of truth - always use getNextOrderableDate()
     // Do NOT trust frontend date - backend decides the only open slot
-    const deliveryMoment = getNextOrderableDeliveryMoment();
+    const deliveryMoment = getNextOrderableDate();
     const deliveryDate = deliveryMoment.toDate();
 
     if (process.env.NODE_ENV !== 'production') {
@@ -551,7 +551,7 @@ exports.selectMeal = async (req, res) => {
     // ========================================
     // UNIFIED CUTOFF TIME (MANDATORY FOR SCHEMA)
     // ========================================
-    const cutoffTime = getCutoffTimeForDate(deliveryMoment.toDate());
+    const cutoffTime = getCutoffForDeliveryDate(deliveryMoment.toDate());
 
     // ==============================
     // HANDLE SKIP BOTH (no meals selected)
@@ -794,11 +794,11 @@ exports.selectDailyMeal = async (req, res) => {
     }
 
     // 1️⃣ Delivery date (daily pay-per-day logic) - unified with subscription offset system
-    const deliveryMoment = getDeliveryDateByOffset(0);
+    const deliveryMoment = getDeliveryDateForTab(1);
     const deliveryDate = deliveryMoment.toDate();
 
     // 2.5️⃣ ENFORCE CUTOFF AT POST LEVEL (MANDATORY SECURITY)
-    const cutoffTime = getCutoffTimeForDate(deliveryDate);
+    const cutoffTime = getCutoffForDeliveryDate(deliveryDate);
     if (nowIST().isAfter(cutoffTime)) {
       return res.status(403).json({
         success: false,
@@ -956,7 +956,7 @@ exports.skipMeal = async (req, res) => {
       // ✅ BUG 2 FIX: Check date-scoped close
       if (restaurantStatus.closedDate) {
         const closedDay = moment.tz(restaurantStatus.closedDate, 'Asia/Kolkata').startOf('day');
-        const effectiveDay = getNextOrderableDeliveryMoment().startOf('day');
+        const effectiveDay = getNextOrderableDate().startOf('day');
         if (closedDay.isSame(effectiveDay, 'day')) {
           return res.status(403).json({
             success: false,
@@ -976,8 +976,8 @@ exports.skipMeal = async (req, res) => {
     }
 
     // 🔥 ALWAYS backend decides delivery date (same as selectMeal)
-    const deliveryMoment = getNextOrderableDeliveryMoment();
-    const cutoffTime = getCutoffTimeForDate(deliveryMoment.toDate());
+    const deliveryMoment = getNextOrderableDate();
+    const cutoffTime = getCutoffForDeliveryDate(deliveryMoment.toDate());
 
     // 🚨 Block skip after cutoff
     if (nowIST().isAfter(cutoffTime)) {
@@ -1059,7 +1059,7 @@ const validateMealSelection = async (req) => {
 
   // 2. KITCHEN-CENTRIC: Delivery date must be the next orderable delivery date
   const deliveryMoment = toIST(deliveryDate).startOf('day');
-  const allowedMoment = getNextOrderableDeliveryMoment();
+  const allowedMoment = getNextOrderableDate();
 
   if (!deliveryMoment.isSame(allowedMoment, 'day')) {
     throw new Error('You can only plan meals for the next delivery day');
@@ -1142,7 +1142,7 @@ exports.planMeals = async (req, res) => {
     }
 
     // KITCHEN-CENTRIC: Users can ONLY plan for the next orderable delivery date
-    const allowedMoment = getNextOrderableDeliveryMoment();
+    const allowedMoment = getNextOrderableDate();
     const startMoment = toIST(startDate).startOf('day');
     const endMoment = toIST(endDate).startOf('day');
 
@@ -1176,7 +1176,7 @@ exports.planMeals = async (req, res) => {
 
       try {
         // ✅ CRITICAL FIX: Check cutoff per date in bulk planning
-        const cutoffTime = getCutoffTimeForDate(currentDate.toDate());
+        const cutoffTime = getCutoffForDeliveryDate(currentDate.toDate());
         if (nowIST().isAfter(cutoffTime)) {
           throw new Error(`Cutoff passed for ${dateStr}. Cannot plan meals after 11:00 PM on the previous day.`);
         }
@@ -1251,7 +1251,7 @@ exports.planMeals = async (req, res) => {
       }
 
       for (const dateMoment of validDates) {
-        const cutoffTime = getCutoffTimeForDate(dateMoment.toDate());
+        const cutoffTime = getCutoffForDeliveryDate(dateMoment.toDate());
 
         const processedMeal = subscription.planCategory === 'premium'
           ? validateAndProcessMeal({ meal: selection, subscription })
@@ -1330,7 +1330,7 @@ exports.getMyMealSelection = async (req, res) => {
     if (!hasActiveSubscription) {
       // Daily user: handle TODAY and TOMORROW tabs differently
       // ✅ USE SINGLE SOURCE OF TRUTH FOR OFFSET MAPPING
-      let deliveryMoment = getDeliveryDateByOffset(offset);
+      let deliveryMoment = getDeliveryDateForTab(offset + 1);
       let lunchMeal = null;
       let dinnerMeal = null;
 
@@ -1347,7 +1347,7 @@ exports.getMyMealSelection = async (req, res) => {
         // For TODAY tab: extra safety filter to ensure NO future meals
         if (offset === -1) {
           mealsForDate = mealsForDate.filter(m =>
-            moment(m.deliveryDate).isBefore(getDeliveryDateByOffset(0))
+            moment(m.deliveryDate).isBefore(getDeliveryDateForTab(1))
           );
         }
 
@@ -1384,7 +1384,7 @@ exports.getMyMealSelection = async (req, res) => {
       }
 
       const deliveryDate = deliveryMoment.toDate();
-      const cutoffTime = getCutoffTimeForDate(deliveryDate);
+      const cutoffTime = getCutoffForDeliveryDate(deliveryDate);
       const now = nowIST();
 
       /* ✅ FIRST calculate payment status */
@@ -1439,12 +1439,12 @@ exports.getMyMealSelection = async (req, res) => {
     // ✅ USE SINGLE SOURCE OF TRUTH FOR OFFSET MAPPING
     // offset = -1 → today
     // offset = 0  → tomorrow
-    deliveryMoment = getDeliveryDateByOffset(offset);
+    deliveryMoment = getDeliveryDateForTab(offset + 1);
 
     const deliveryDate = deliveryMoment.toDate();
 
     // ✅ ENSURE DEFAULT MEALS EXIST (auto-create if after cutoff) - ONLY FOR NEXT DELIVERY (offset=0)
-    let cutoffTime = getCutoffTimeForDate(deliveryMoment.toDate());
+    let cutoffTime = getCutoffForDeliveryDate(deliveryMoment.toDate());
     let now = nowIST();
     let autoDefaultsCreated = false;
     if (offset === 0 && now.isAfter(cutoffTime)) {
@@ -1504,7 +1504,7 @@ exports.getMyMealSelection = async (req, res) => {
     // ========================================
     // Both lunch AND dinner lock at 11:00 PM of PREVIOUS DAY
     // Re-calculate for logging purposes
-    cutoffTime = getCutoffTimeForDate(deliveryDate);
+    cutoffTime = getCutoffForDeliveryDate(deliveryDate);
     now = nowIST();
 
     // ========================================
@@ -1957,14 +1957,14 @@ exports.getAggregatedMealOrders = async (req, res) => {
     // Override = owner-centric (specific date if provided)
     let targetDate = date
       ? toIST(date).startOf('day')
-      : getNextOrderableDeliveryMoment();
+      : getNextOrderableDate();
 
     if (process.env.NODE_ENV !== 'production') {
       console.log('🍽️ [KITCHEN] Using delivery date:', targetDate.format('YYYY-MM-DD'), date ? '(owner override)' : '(kitchen default)');
     }
 
     // ✅ ENSURE DEFAULT MEALS EXIST (auto-create if after cutoff)
-    const cutoff = getCutoffTimeForDate(targetDate);
+    const cutoff = getCutoffForDeliveryDate(targetDate);
     if (nowIST().isAfter(cutoff)) {
       if (process.env.NODE_ENV !== 'production') {
         console.log('🔧 [KITCHEN AUTO-DEFAULT] Ensuring default meals exist for:', targetDate.format('YYYY-MM-DD'));
@@ -2101,7 +2101,7 @@ exports.getAggregatedMealOrders = async (req, res) => {
     // UNIFIED CUTOFF TIME STATUS (11:00 PM)
     // ========================================
     const now = nowIST();
-    const unifiedCutoff = getCutoffTimeForDate(targetDate.toDate());
+    const unifiedCutoff = getCutoffForDeliveryDate(targetDate.toDate());
 
     debugLog('\n⏰ Unified Cutoff Time Status:');
     debugLog(`   - Current Time: ${now.format('HH:mm:ss')}`);
@@ -2252,7 +2252,7 @@ exports.getAggregatedMealOrders = async (req, res) => {
 exports.getMyMealsDashboard = async (req, res) => {
   try {
     // KITCHEN-CENTRIC: Show meals for the next orderable delivery date only
-    const deliveryMoment = getNextOrderableDeliveryMoment();
+    const deliveryMoment = getNextOrderableDate();
     const deliveryDate = deliveryMoment.toDate();
 
     // ✅ MANDATORY FIX: Use getISTDayRange for date consistency
@@ -2263,7 +2263,7 @@ exports.getMyMealsDashboard = async (req, res) => {
     }).sort({ mealType: 1 });
 
     // ✅ FIX: Return REAL lock state based on cutoff time
-    const cutoffTime = getCutoffTimeForDate(deliveryDate);
+    const cutoffTime = getCutoffForDeliveryDate(deliveryDate);
     const isLocked = nowIST().isAfter(cutoffTime);
 
     // Return meals for the next orderable delivery date
