@@ -1443,22 +1443,10 @@ exports.getMyMealSelection = async (req, res) => {
 
     const deliveryDate = deliveryMoment.toDate();
 
-    // ✅ ENSURE DEFAULT MEALS EXIST (auto-create if after cutoff) - ONLY FOR NEXT DELIVERY (offset=0)
+    // ✅ Default meals handled by cron only - read-only endpoint
     let cutoffTime = getCutoffForDeliveryDate(deliveryMoment.toDate());
     let now = nowIST();
-    let autoDefaultsCreated = false;
-    if (offset === 0 && now.isAfter(cutoffTime)) {
-      // NOTE:
-      // Default meals are auto-created during GET after cutoff.
-      // This is intentional for kitchen readiness.
-      // ⚠️ This endpoint must remain private.
-      // Future improvement: move default creation to cron.
-      if (process.env.NODE_ENV !== 'production') {
-        console.log('🔧 [AUTO-DEFAULT] Cutoff passed, ensuring default meals exist...');
-      }
-      const createdCount = await ensureDefaultMealsForDate(deliveryMoment.toDate());
-      autoDefaultsCreated = createdCount > 0;
-    }
+    let autoDefaultsCreated = false; // Default meals handled by cron only
 
     // Find meal orders for this date
     // ✅ USE DATE RANGE QUERY instead of equality to handle timezone edge cases
