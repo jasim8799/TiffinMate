@@ -44,19 +44,29 @@ exports.createDelivery = async (req, res) => {
       });
     }
 
-    // Use upsert: update if exists, insert if not
-    const delivery = await Delivery.findOneAndUpdate(
-      { user: userId, deliveryDate: normalizedDate },
-      {
+    // SAFE: Check if delivery exists FIRST, then decide what to update
+    let delivery = await Delivery.findOne({
+      user: userId,
+      deliveryDate: normalizedDate
+    });
+
+    if (!delivery) {
+      // Create new delivery with default status
+      delivery = await Delivery.create({
         user: userId,
         subscription: subscriptionId,
         deliveryDate: normalizedDate,
         mealType,
         meals,
         status: 'preparing'
-      },
-      { upsert: true, new: true }
-    );
+      });
+    } else {
+      // Update ONLY mutable fields — NEVER overwrite status
+      delivery.mealType = mealType;
+      delivery.meals = meals;
+      // status, lunchStatus, dinnerStatus are PRESERVED
+      await delivery.save();
+    }
 
     res.status(201).json({
       success: true,
@@ -291,8 +301,8 @@ exports.getMyTodayDelivery = async (req, res) => {
       deliveryStatusMap[d.mealType] = d.status;
     }
 
-    // Determine overall status (best single status for display)
-    const statusPriority = ['on-the-way', 'preparing', 'delivered', 'paused'];
+    // Determine overall status (FIXED: correct priority order)
+    const statusPriority = ['preparing', 'on-the-way', 'delivered', 'paused'];
     let overallStatus = 'preparing'; // default if delivery doc not yet created
     for (const priority of statusPriority) {
       if (deliveries.some(d => d.status === priority)) {
@@ -324,15 +334,10 @@ exports.getMyTodayDelivery = async (req, res) => {
 // @desc    Get kitchen summary — accurate meal counts, veg/nonveg, ingredients
 // @route   GET /api/deliveries/kitchen-summary?date=YYYY-MM-DD
 // @access  Private (Owner)
-//
-// CRITICAL: Always queries TODAY IST (never flips to tomorrow after cutoff).
-// At midnight IST, "today" naturally becomes the new day.
-// If ?date param is provided, queries that specific IST date instead.
 exports.getKitchenSummary = async (req, res) => {
   try {
     const { date } = req.query;
 
-    // Parse target date — defaults to today IST
     let targetDate;
     if (date) {
       targetDate = moment.tz(date, 'YYYY-MM-DD', 'Asia/Kolkata').startOf('day').toDate();
@@ -341,13 +346,11 @@ exports.getKitchenSummary = async (req, res) => {
       }
     }
 
-    // Ensure default meals exist for the target date if after cutoff
     const resolvedDate = targetDate || getISTNow().startOf('day').toDate();
     if (isCutoffPassed()) {
       await ensureDefaultMealsForDate(resolvedDate);
     }
 
-    // Run the full aggregation
     const report = await aggregateKitchenData(resolvedDate);
 
     res.status(200).json({
@@ -409,10 +412,8 @@ exports.autoCreateTodaysDeliveries = async (req, res) => {
     const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
     const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
 
-    // ✅ CRITICAL: Get ONLY active users (exclude deleted/deactivated)
     const activeUserIds = await getActiveUserIds();
 
-    // Get all confirmed meal orders for today (active users only)
     const mealOrders = await MealOrder.find({
       deliveryDate: { $gte: today, $lt: tomorrow },
       status: 'confirmed',
@@ -420,7 +421,6 @@ exports.autoCreateTodaysDeliveries = async (req, res) => {
       'selectedMeal.isSkip': { $ne: true }
     }).populate('user');
 
-    // Group mealOrders by user + deliveryDate
     const groupedOrders = {};
     mealOrders.forEach(order => {
       const key = `${order.user._id}_${order.deliveryDate.toISOString().split('T')[0]}`;
@@ -440,7 +440,6 @@ exports.autoCreateTodaysDeliveries = async (req, res) => {
     for (const key in groupedOrders) {
       const group = groupedOrders[key];
       try {
-        // Determine mealType: 'both' if both lunch and dinner, else single
         const mealTypes = new Set(group.orders.map(o => o.mealType));
         let mealType;
         if (mealTypes.has('lunch') && mealTypes.has('dinner')) {
@@ -450,10 +449,9 @@ exports.autoCreateTodaysDeliveries = async (req, res) => {
         } else if (mealTypes.has('dinner')) {
           mealType = 'dinner';
         } else {
-          mealType = 'both'; // fallback
+          mealType = 'both';
         }
 
-        // Collect meals
         const meals = {};
         group.orders.forEach(order => {
           if (order.mealType === 'lunch' || order.mealType === 'both') {
@@ -470,7 +468,6 @@ exports.autoCreateTodaysDeliveries = async (req, res) => {
           }
         });
 
-        // Get user's active subscription (take from first order)
         const subscription = await Subscription.findOne({
           user: group.user._id,
           status: 'active',
@@ -483,13 +480,16 @@ exports.autoCreateTodaysDeliveries = async (req, res) => {
           continue;
         }
 
-        // Combine notes
         const notes = group.orders.map(o => o.notes).filter(n => n).join('; ') || '';
 
-        // Upsert delivery
-        await Delivery.findOneAndUpdate(
-          { user: group.user._id, deliveryDate: group.deliveryDate },
-          {
+        // SAFE: Check if delivery exists FIRST, then decide what to update
+        let delivery = await Delivery.findOne({
+          user: group.user._id,
+          deliveryDate: group.deliveryDate
+        });
+
+        if (!delivery) {
+          delivery = await Delivery.create({
             user: group.user._id,
             subscription: subscription._id,
             deliveryDate: group.deliveryDate,
@@ -497,9 +497,15 @@ exports.autoCreateTodaysDeliveries = async (req, res) => {
             meals,
             status: 'preparing',
             notes
-          },
-          { upsert: true, new: true }
-        );
+          });
+        } else {
+          // Update ONLY mutable fields — NEVER overwrite status
+          delivery.mealType = mealType;
+          delivery.meals = meals;
+          delivery.notes = notes;
+          // status, lunchStatus, dinnerStatus are PRESERVED
+          await delivery.save();
+        }
 
         upsertedCount++;
       } catch (err) {
@@ -535,14 +541,12 @@ exports.markAllOutForDelivery = async (req, res) => {
     const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
     const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
 
-    // Get active users only
     const activeUserIds = await User.find({ 
       role: 'customer', 
       isActive: true,
       deletedAt: { $exists: false }
     }).distinct('_id');
 
-    // Find all today's deliveries that are preparing
     const deliveries = await Delivery.find({
       deliveryDate: { $gte: today, $lt: tomorrow },
       user: { $in: activeUserIds },
@@ -553,23 +557,35 @@ exports.markAllOutForDelivery = async (req, res) => {
       return res.status(200).json({
         success: true,
         message: 'No deliveries to mark as out for delivery',
-        data: {
-          updated: 0
-        }
+        data: { updated: 0 }
       });
     }
 
-    // Update all deliveries to out-for-delivery
+    // Update all deliveries using meal-level status
     const updatePromises = deliveries.map(async (delivery) => {
       const previousStatus = delivery.status;
 
-      delivery.status = 'on-the-way';
-      delivery.deliveryStatus = 'OUT_FOR_DELIVERY';
+      // Set meal-level status based on mealType
+      if (delivery.mealType === 'lunch') {
+        delivery.lunchStatus = 'on-the-way';
+      } else if (delivery.mealType === 'dinner') {
+        delivery.dinnerStatus = 'on-the-way';
+      } else {
+        delivery.lunchStatus = 'on-the-way';
+        delivery.dinnerStatus = 'on-the-way';
+      }
+
+      // Derive overall status using computeDerivedStatus
+      delivery.status = Delivery.computeDerivedStatus(
+        delivery.lunchStatus,
+        delivery.dinnerStatus,
+        delivery.mealType
+      );
+
       delivery.outForDeliveryTime = new Date();
       await delivery.save();
 
       await delivery.populate('user');
-      // Guard: if delivery was already 'on-the-way', skip notifyDeliveryStatus
       if (previousStatus !== 'on-the-way') {
         await notifyDeliveryStatus(delivery, 'on-the-way');
       }
@@ -584,9 +600,7 @@ exports.markAllOutForDelivery = async (req, res) => {
     res.status(200).json({
       success: true,
       message: `Marked ${deliveries.length} deliveries as out for delivery`,
-      data: {
-        updated: deliveries.length
-      }
+      data: { updated: deliveries.length }
     });
   } catch (error) {
     console.error('Mark out for delivery error:', error);
@@ -598,36 +612,33 @@ exports.markAllOutForDelivery = async (req, res) => {
   }
 };
 
-// ✅ GET TODAY'S USERS FOR SELECTIVE DELIVERY
+// @desc    Get today's users for selective delivery
+// @route   GET /api/deliveries/today-users
+// @access  Private (Owner only)
 exports.getTodayUsers = async (req, res) => {
   try {
     const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
     const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
 
-    // Get active users only (non-deleted)
     const activeUserIds = await User.find({ 
       role: 'customer', 
       isActive: true,
       deletedAt: { $exists: false }
     }).distinct('_id');
 
-    // ✅ USE MEALORDER AS SOURCE OF TRUTH
-    // Find all today's meal orders that are ready for delivery
     const mealOrders = await MealOrder.find({
       deliveryDate: { $gte: today, $lt: tomorrow },
       user: { $in: activeUserIds },
-      status: { $in: ['pending', 'confirmed'] }, // Ready but not yet out for delivery
-      'selectedMeal.isSkip': { $ne: true } // Exclude skipped meals
+      status: { $in: ['pending', 'confirmed'] },
+      'selectedMeal.isSkip': { $ne: true }
     })
     .select('user mealType')
     .populate('user', 'name mobile address')
     .lean();
 
-    // Group by user and aggregate meals
     const userMap = new Map();
 
     mealOrders.forEach(order => {
-      // ✅ CRITICAL: Ensure user is populated, skip if not
       if (!order.user || !order.user._id) {
         console.warn('⚠️ MealOrder missing user data:', order._id);
         return;
@@ -635,9 +646,8 @@ exports.getTodayUsers = async (req, res) => {
 
       const userId = order.user._id.toString();
       if (!userMap.has(userId)) {
-        // ✅ FLATTEN: All fields at root level, NO NESTED OBJECTS
         userMap.set(userId, {
-          userId: String(order.user._id), // Explicit string conversion
+          userId: String(order.user._id),
           userName: String(order.user.name || 'Unknown'),
           mobile: String(order.user.mobile || 'N/A'),
           address: String(order.user.address || 'N/A'),
@@ -648,11 +658,6 @@ exports.getTodayUsers = async (req, res) => {
     });
 
     const userList = Array.from(userMap.values());
-
-    // ✅ DEBUG: Log response structure to verify it's flat
-    if (userList.length > 0) {
-      console.log('📤 Sample response item:', JSON.stringify(userList[0], null, 2));
-    }
 
     console.log(`📋 [TODAY USERS] Found ${userList.length} users with ${mealOrders.length} meal orders ready for delivery`);
 
@@ -670,15 +675,12 @@ exports.getTodayUsers = async (req, res) => {
   }
 };
 
-// ✅ MARK SELECTED USERS AS OUT FOR DELIVERY
+// @desc    Mark selected users as out for delivery
+// @route   PATCH /api/deliveries/mark-selected-out
+// @access  Private (Owner only)
 exports.markSelectedOutForDelivery = async (req, res) => {
   try {
     const { userIds } = req.body;
-
-    console.log('========================================');
-    console.log('[OUT FOR DELIVERY] Request received');
-    console.log('Selected User IDs:', userIds);
-    console.log('========================================');
 
     if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
       return res.status(400).json({
@@ -690,84 +692,80 @@ exports.markSelectedOutForDelivery = async (req, res) => {
     const today = moment().tz('Asia/Kolkata').startOf('day').toDate();
     const tomorrow = moment().tz('Asia/Kolkata').add(1, 'day').startOf('day').toDate();
 
-    // ✅ USE MEALORDER AS SOURCE OF TRUTH
-    // Find today's meal orders for selected users ONLY
+    // Find today's meal orders for selected users
     const mealOrders = await MealOrder.find({
       deliveryDate: { $gte: today, $lt: tomorrow },
-      user: { $in: userIds },  // ✅ ONLY selected users
+      user: { $in: userIds },
       status: { $in: ['pending', 'confirmed'] },
-      'selectedMeal.isSkip': { $ne: true } // 🚨 EXCLUDE SKIPPED MEALS
+      'selectedMeal.isSkip': { $ne: true }
     }).populate('user', 'name mobile');
-
-    console.log(`Found ${mealOrders.length} meal orders for ${userIds.length} selected users`);
 
     if (mealOrders.length === 0) {
       return res.status(200).json({
         success: true,
         message: 'No meal orders found for selected users',
-        data: {
-          ordersUpdated: 0
-        }
+        data: { ordersUpdated: 0 }
       });
     }
 
-    // Update meal orders to out_for_delivery status
+    // Update deliveries using Delivery model (single source of truth)
+    const updatedDeliveries = [];
     const updatePromises = mealOrders.map(async (order) => {
-      console.log(`\n📦 Processing order for user: ${order.user.name} (${order.user._id})`);
-      console.log(`   Order ID: ${order._id}`);
-      // ✅ FIX 500: MealOrder.status enum is ['pending','confirmed','cancelled'].
-      // Setting order.status = 'out_for_delivery' causes Mongoose ValidationError → 500.
-      // Use raw collection update to set non-schema deliveryStatus tracking field ONLY.
-      // order.status is intentionally left unchanged (remains 'confirmed').
-      await MealOrder.collection.updateOne(
-        { _id: order._id },
-        { $set: { deliveryStatus: 'on-the-way' } }
-      );
-
-      // ✅ EMIT SOCKET EVENT PER USER (Real-time update - TARGETED ONLY)
-      console.log(`   📤 Emitting to ONLY user ${order.user._id}: delivery_status_updated`);
-      socketService.emitToUser(order.user._id.toString(), 'delivery_status_updated', {
-        orderId:        order._id,
-        userId:         order.user._id,
-        status:         'out_for_delivery',
-        deliveryStatus: 'out_for_delivery',  // ✅ BUG 3 FIX: mirror field
-        eventId:        `delivery_${order._id}_${Date.now()}`, // ✅ BUG 3 FIX: dedup key
-        mealType:       order.mealType,
-        deliveryDate:   order.deliveryDate,
-        message:        '🚚 Your food is on the way!'
+      const delivery = await Delivery.findOne({
+        user: order.user._id,
+        deliveryDate: { $gte: today, $lt: tomorrow }
       });
 
-      // Send SMS notification
-      try {
-        await smsService.sendDeliveryOnWay(
-          order.user.mobile, 
-          order.user.name, 
-          order.user._id
-        );
-      } catch (smsError) {
-        console.error('SMS error for user', order.user._id, ':', smsError.message);
+      if (!delivery) {
+        console.warn(`⚠️ No delivery found for user ${order.user._id}`);
+        return null;
       }
 
-      return order;
+      // Update using Delivery model updateMealStatus
+      try {
+        await delivery.updateMealStatus(order.mealType, 'on-the-way');
+        updatedDeliveries.push(delivery._id);
+
+        // Emit socket via Delivery model
+        await delivery.populate('user');
+        socketService.emitDeliveryStatusUpdated({
+          deliveryId:   delivery._id,
+          userId:       delivery.user._id,
+          userName:     delivery.user.name,
+          mealType:     order.mealType,
+          status:       delivery.status,
+          lunchStatus:  delivery.lunchStatus,
+          dinnerStatus: delivery.dinnerStatus,
+          deliveryDate: delivery.deliveryDate,
+          updatedAt:    new Date(),
+        });
+
+        // Send SMS notification
+        try {
+          await smsService.sendDeliveryOnWay(
+            delivery.user.mobile, 
+            delivery.user.name, 
+            delivery.user._id
+          );
+        } catch (smsError) {
+          console.error('SMS error:', smsError.message);
+        }
+      } catch (updateError) {
+        console.error(`❌ Error updating delivery: ${updateError.message}`);
+      }
+
+      return delivery;
     });
 
     await Promise.all(updatePromises);
 
-    // Group by user for reporting
     const uniqueUserIds = [...new Set(mealOrders.map(o => o.user._id.toString()))];
 
-    console.log('\n========================================');
-    console.log('✅ OUT FOR DELIVERY COMPLETE');
-    console.log(`Updated users: ${uniqueUserIds.join(', ')}`);
-    console.log(`Total orders updated: ${mealOrders.length}`);
-    console.log('❌ NO BROADCAST - Only selected users notified');
-    console.log('========================================\n');
-
-    console.log(`✅ [OUT FOR DELIVERY] Updated ${mealOrders.length} meal orders for ${uniqueUserIds.length} users`);
+    console.log(`✅ [OUT FOR DELIVERY] Updated ${updatedDeliveries.length} deliveries for ${uniqueUserIds.length} users`);
 
     res.status(200).json({
       success: true,
-      message: `Marked ${mealOrders.length} meal orders as out for delivery for ${uniqueUserIds.length} users`,
+      message: `Marked ${updatedDeliveries.length} deliveries as out for delivery`,
       data: {
         deliveriesUpdated: uniqueUserIds.length,
         ordersUpdated: mealOrders.length
@@ -783,11 +781,7 @@ exports.markSelectedOutForDelivery = async (req, res) => {
   }
 };
 
-// ============================================================
-// PHASE 16B — QUICK DELIVERY STATUS UPDATE (by user + date + mealType)
-// ============================================================
-
-// @desc    Update delivery status by userId + date + mealType (for owner quick panel)
+// @desc    Update delivery status by userId + date + mealType
 // @route   PATCH /api/deliveries/update-by-user
 // @access  Private (Owner only)
 exports.updateDeliveryByUser = async (req, res) => {
@@ -808,16 +802,13 @@ exports.updateDeliveryByUser = async (req, res) => {
       });
     }
 
-    // Normalise to IST start-of-day UTC for DB lookup
     const deliveryDate = normaliseDeliveryDate(date);
 
-    // ── Only affects the matching IST date ─────────────────────
     const delivery = await Delivery.findOne({ user: userId, deliveryDate, mealType })
       .populate('user', 'name mobile role')
       .populate('subscription');
 
     if (!delivery) {
-      // Try to find without mealType restriction (delivery might cover 'both')
       const broadDelivery = await Delivery.findOne({ user: userId, deliveryDate })
         .populate('user', 'name mobile role')
         .populate('subscription');
@@ -825,7 +816,7 @@ exports.updateDeliveryByUser = async (req, res) => {
       if (!broadDelivery) {
         return res.status(404).json({
           success: false,
-          message: `No delivery found for user ${userId} on ${date}. Create delivery first.`,
+          message: `No delivery found for user ${userId} on ${date}.`,
         });
       }
     }
@@ -838,7 +829,6 @@ exports.updateDeliveryByUser = async (req, res) => {
       return res.status(200).json({ success: true, message: 'Status already set', data: targetDelivery });
     }
 
-    // Validate state transition
     try {
       DeliveryStateMachine.validateTransition(targetDelivery.status, status);
     } catch (transitionError) {
@@ -852,22 +842,16 @@ exports.updateDeliveryByUser = async (req, res) => {
     await targetDelivery.updateStatus(status);
     await targetDelivery.populate('user');
 
-    // Sync delivery status into MealOrder documents (raw $set bypasses enum — non-fatal)
     try {
       const mealTypeFilter = targetDelivery.mealType && targetDelivery.mealType !== 'both'
         ? { mealType: targetDelivery.mealType }
         : {};
       await MealOrder.collection.updateMany(
-        {
-          user:         targetDelivery.user._id,
-          deliveryDate: targetDelivery.deliveryDate,
-          ...mealTypeFilter,
-        },
+        { user: targetDelivery.user._id, deliveryDate: targetDelivery.deliveryDate, ...mealTypeFilter },
         { $set: { deliveryStatus: status } }
       );
-    } catch (_) { /* non-fatal — delivery update already succeeded */ }
+    } catch (_) { /* non-fatal */ }
 
-    // Notify user + owner via socket
     const payload = {
       deliveryId:   targetDelivery._id,
       userId:       targetDelivery.user._id,
@@ -879,7 +863,6 @@ exports.updateDeliveryByUser = async (req, res) => {
     };
     socketService.emitDeliveryStatusUpdated(payload);
 
-    // Send SMS notification
     try { await notifyDeliveryStatus(targetDelivery, status); } catch (_) { /* non-fatal */ }
 
     res.status(200).json({
@@ -893,25 +876,13 @@ exports.updateDeliveryByUser = async (req, res) => {
   }
 };
 
-// ============================================================
-// PER-MEAL STATUS UPDATE
-// ============================================================
-// @desc    Update status for a specific meal (lunch OR dinner) on a delivery
+// @desc    Update status for a specific meal (lunch OR dinner)
 // @route   PATCH /api/deliveries/:id/meal-status
 // @access  Private (Owner only)
-//
-// Body: { mealType: 'lunch'|'dinner', status: 'preparing'|'on-the-way'|'delivered'|'paused' }
-//
-// This is the PRIMARY status update endpoint for the owner delivery screen.
-// It updates lunchStatus / dinnerStatus independently and derives the overall
-// delivery.status automatically via Delivery.computeDerivedStatus().
-// Only ONE socket event is emitted per call — delivery_status_updated.
-// ============================================================
 exports.updateMealStatus = async (req, res) => {
   try {
     const { mealType, status } = req.body;
 
-    // ── Validate inputs ──────────────────────────────────────────
     const allowedMealTypes = ['lunch', 'dinner'];
     const allowedStatuses  = ['preparing', 'on-the-way', 'delivered', 'paused'];
 
@@ -936,7 +907,6 @@ exports.updateMealStatus = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Delivery not found' });
     }
 
-    // Guard: the delivery must cover the requested mealType
     if (delivery.mealType !== 'both' && delivery.mealType !== mealType) {
       return res.status(400).json({
         success: false,
@@ -944,12 +914,10 @@ exports.updateMealStatus = async (req, res) => {
       });
     }
 
-    // ── Enforce state machine per meal ───────────────────────────
     const currentMealStatus = mealType === 'lunch'
       ? (delivery.lunchStatus || 'preparing')
       : (delivery.dinnerStatus || 'preparing');
 
-    // No-op guard
     if (currentMealStatus === status) {
       return res.status(200).json({
         success: true,
@@ -968,25 +936,21 @@ exports.updateMealStatus = async (req, res) => {
       });
     }
 
-    // ── Apply per-meal update (derives overall status automatically) ─
     await delivery.updateMealStatus(mealType, status);
     await delivery.populate('user');
 
-    // markDayUsed when fully delivered
     if (delivery.status === 'delivered' && delivery.subscription) {
       try { await delivery.subscription.markDayUsed(); } catch (_) { /* non-fatal */ }
     }
 
-    // ── Send notifications (SMS + AppNotification) ───────────────
     try { await notifyDeliveryStatus(delivery, status); } catch (_) { /* non-fatal */ }
 
-    // ── Single authoritative socket emission ─────────────────────
     socketService.emitDeliveryStatusUpdated({
       deliveryId:   delivery._id,
       userId:       delivery.user._id,
       userName:     delivery.user.name,
-      mealType,                          // which meal was updated
-      status:       delivery.status,     // derived overall status
+      mealType,
+      status:       delivery.status,
       lunchStatus:  delivery.lunchStatus,
       dinnerStatus: delivery.dinnerStatus,
       deliveryDate: delivery.deliveryDate,
