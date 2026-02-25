@@ -89,6 +89,22 @@ mealOrderSchema.index(
   { name: 'idx_user_deliveryDate' }
 );
 
+// ========================================
+// PERFORMANCE INDEX: Kitchen Aggregation Query
+// ========================================
+// Fixes GET /api/meals/owner/aggregated?date=YYYY-MM-DD timeout
+// Query pattern: deliveryDate range + user $in + status != 'cancelled'
+mealOrderSchema.index(
+  { deliveryDate: 1, user: 1, status: 1 },
+  { name: 'idx_kitchen_aggregation' }
+);
+
+// Optional: deliveryDate-only index for simpler queries
+mealOrderSchema.index(
+  { deliveryDate: 1 },
+  { name: 'idx_deliveryDate_only' }
+);
+
 // Chaos mode removed - was causing production timeouts
 
 // Method to check if order is after cutoff
