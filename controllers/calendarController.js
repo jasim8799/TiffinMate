@@ -1,107 +1,96 @@
 const Subscription = require('../models/Subscription');
-const Delivery = require('../models/Delivery');
+const MealOrder = require('../models/MealOrder');
 const moment = require('moment');
 
-// @desc    Get user's calendar (subscription-based delivery status)
+// @desc    Get user's calendar (subscription-based meal delivery status)
 // @route   GET /api/calendar/my
-// @access  Private
+// @access  Private (any authenticated user, no active subscription required)
 exports.getMyCalendar = async (req, res) => {
   try {
-    // Find user's active subscription
+    // Find the user's most recent subscription (any status)
     const subscription = await Subscription.findOne({
       user: req.user._id,
-      status: 'active'
-    });
+      status: { $in: ['active', 'grace', 'paused', 'expired', 'pending_approval', 'disabled'] }
+    }).sort({ startDate: -1 });
 
     if (!subscription) {
-      // Return success with empty data instead of 404
       return res.status(200).json({
         success: true,
-        message: 'No active subscription',
+        message: 'No subscription found',
         data: []
       });
     }
 
     // Generate date range from subscription
     const startDate = moment(subscription.startDate).startOf('day');
-    const endDate = moment(subscription.endDate).endOf('day');
-    const today = moment().startOf('day');
+    const endDate   = moment(subscription.endDate).startOf('day');
+    const today     = moment().startOf('day');
 
-    // Fetch all deliveries for this subscription
-    const deliveries = await Delivery.find({
+    const startKey = startDate.format('YYYY-MM-DD');
+    const endKey   = endDate.format('YYYY-MM-DD');
+
+    // Fetch all MealOrders for this user + subscription within the date range
+    const mealOrders = await MealOrder.find({
       user: req.user._id,
       subscription: subscription._id,
       deliveryDate: {
         $gte: startDate.toDate(),
-        $lte: endDate.toDate()
+        $lte: endDate.clone().endOf('day').toDate()
       }
-    }).select('deliveryDate status');
+    }).select('deliveryDate selectedMeal status');
 
-    // Create a map of delivery statuses by date
-    const deliveryMap = {};
-    deliveries.forEach(delivery => {
-      const dateKey = moment(delivery.deliveryDate).format('YYYY-MM-DD');
-      deliveryMap[dateKey] = delivery.status;
+    // Build a map: dateKey -> { hasSkipped: bool, hasNormal: bool }
+    const mealOrderMap = {};
+    mealOrders.forEach(order => {
+      const dateKey = moment(order.deliveryDate).format('YYYY-MM-DD');
+      if (!mealOrderMap[dateKey]) {
+        mealOrderMap[dateKey] = { hasSkipped: false, hasNormal: false };
+      }
+
+      const isSkipped =
+        order.selectedMeal?.isSkip === true ||
+        order.status === 'cancelled';
+
+      if (isSkipped) {
+        mealOrderMap[dateKey].hasSkipped = true;
+      } else {
+        mealOrderMap[dateKey].hasNormal = true;
+      }
     });
 
-    // Generate calendar data for entire subscription period
+    // Build calendar entries for the entire subscription period
     const calendarData = [];
-    let currentDate = moment(startDate);
+    let cursor = startDate.clone();
 
-    while (currentDate.isSameOrBefore(endDate, 'day')) {
-      const dateKey = currentDate.format('YYYY-MM-DD');
+    while (cursor.isSameOrBefore(endDate, 'day')) {
+      const dateKey = cursor.format('YYYY-MM-DD');
       let status;
 
-      if (currentDate.isBefore(today, 'day')) {
-        // Past dates
-        if (deliveryMap[dateKey]) {
-          // Has delivery record
-          const deliveryStatus = deliveryMap[dateKey];
-          if (deliveryStatus === 'delivered') {
-            status = 'delivered';
-          } else if (deliveryStatus === 'paused' || deliveryStatus === 'disabled') {
-            status = 'skipped';
-          } else {
-            status = 'expired'; // Was scheduled but not delivered
-          }
-        } else {
-          // No delivery record for past date
-          status = 'expired';
-        }
-      } else if (currentDate.isSame(today, 'day')) {
-        // Today
-        if (deliveryMap[dateKey]) {
-          const deliveryStatus = deliveryMap[dateKey];
-          if (deliveryStatus === 'delivered') {
-            status = 'delivered';
-          } else if (deliveryStatus === 'paused' || deliveryStatus === 'disabled') {
-            status = 'skipped';
-          } else {
-            status = 'pending'; // Preparing or on-the-way
-          }
-        } else {
-          status = 'pending'; // Scheduled for today
-        }
+      // Subscription boundary markers take priority
+      if (dateKey === startKey) {
+        status = 'subscription_start';
+      } else if (dateKey === endKey) {
+        status = 'subscription_end';
       } else {
-        // Future dates
-        if (deliveryMap[dateKey]) {
-          const deliveryStatus = deliveryMap[dateKey];
-          if (deliveryStatus === 'paused' || deliveryStatus === 'disabled') {
-            status = 'skipped';
-          } else {
-            status = 'upcoming';
-          }
+        const orderInfo = mealOrderMap[dateKey];
+
+        // A day is skipped when ALL its orders are skipped (or explicitly cancelled)
+        // and there are no normal orders
+        const isSkipped = orderInfo && orderInfo.hasSkipped && !orderInfo.hasNormal;
+
+        if (isSkipped) {
+          status = 'skipped';
+        } else if (cursor.isBefore(today, 'day')) {
+          status = 'delivered';
+        } else if (cursor.isSame(today, 'day')) {
+          status = 'pending';
         } else {
-          status = 'upcoming'; // Will be delivered
+          status = 'upcoming';
         }
       }
 
-      calendarData.push({
-        date: dateKey,
-        status: status
-      });
-
-      currentDate.add(1, 'day');
+      calendarData.push({ date: dateKey, status });
+      cursor.add(1, 'day');
     }
 
     res.status(200).json({
@@ -117,3 +106,4 @@ exports.getMyCalendar = async (req, res) => {
     });
   }
 };
+
