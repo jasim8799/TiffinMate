@@ -688,64 +688,106 @@ exports.deleteUser = async (req, res) => {
   }
 };
 
-// @desc    Get customers only
-// @desc    Get all customers with their subscription details
+// @desc    Get all customers with aggregated subscription + payment data
 // @route   GET /api/users/customers
 // @access  Private (Owner only)
 exports.getCustomers = async (req, res) => {
   try {
-    const Subscription = require('../models/Subscription');
-    
-    // Get only ACTIVE customers (exclude soft-deleted ones)
-    const customers = await User.find({ 
-      role: 'customer',
-      isActive: true,
-      deletedAt: { $exists: false }
-    })
-      .select('-password -otp')
-      .sort({ createdAt: -1 });
+    const Payment = require('../models/Payment');
 
-    console.log(`📊 Found ${customers.length} customers in database`);
-    
-    // Get active subscription for each customer
-    const customersWithSubscriptions = await Promise.all(
-      customers.map(async (customer) => {
-        // Find the most recent active or pending subscription
-        const activeSubscription = await Subscription.findOne({
-          user: customer._id,
-          status: { $in: ['active', 'pending', 'paused'] }
-        })
-        .sort({ createdAt: -1 })
-        .lean();
+    // ── Pagination ────────────────────────────────────────────
+    const page  = Math.max(1, parseInt(req.query.page  ?? '1',  10));
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit ?? '100', 10)));
+    const skip  = (page - 1) * limit;
 
-        const customerData = customer.toObject();
-        
-        // Add subscription data if exists
-        if (activeSubscription) {
-          customerData.subscription = {
-            _id: activeSubscription._id,
-            status: activeSubscription.status,
-            planType: activeSubscription.planType,
-            amount: activeSubscription.amount,
-            startDate: activeSubscription.startDate,
-            endDate: activeSubscription.endDate,
-            remainingDays: activeSubscription.remainingDays,
-            daysUsed: activeSubscription.daysUsed || 0,
-          };
-          console.log(`  ✅ ${customer.name} - Has ${activeSubscription.status} subscription`);
-        } else {
-          customerData.subscription = null;
-          console.log(`  ⚠️ ${customer.name} - No active subscription`);
+    // ── Optional status filter ────────────────────────────────
+    // ?status=active  → isActive:true
+    // ?status=inactive → isActive:false
+    // ?status=all (default) → both
+    const statusParam = (req.query.status ?? 'all').toLowerCase();
+    const baseMatch = { role: 'customer' };
+    if (statusParam === 'active')   baseMatch.isActive = true;
+    if (statusParam === 'inactive') baseMatch.isActive = false;
+
+    // ── Total count for pagination meta ───────────────────────
+    const total = await User.countDocuments(baseMatch);
+
+    // ── Single aggregation — no N+1 ───────────────────────────
+    const customers = await User.aggregate([
+      { $match: baseMatch },
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+
+      // ── Join: most-recent active/pending/paused subscription ─
+      {
+        $lookup: {
+          from: 'subscriptions',
+          let: { userId: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: { $eq: ['$user', '$$userId'] },
+                status: { $in: ['active', 'pending_approval', 'pending', 'paused', 'grace'] }
+              }
+            },
+            { $sort: { createdAt: -1 } },
+            { $limit: 1 }
+          ],
+          as: 'activeSubscriptions'
         }
-        
-        return customerData;
-      })
-    );
+      },
+
+      // ── Join: all payments to sum collected amount ────────────
+      {
+        $lookup: {
+          from: 'payments',
+          let: { userId: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: { $eq: ['$user', '$$userId'] },
+                status: { $in: ['paid', 'verified'] }
+              }
+            },
+            {
+              $group: {
+                _id: null,
+                total: { $sum: '$amount' }
+              }
+            }
+          ],
+          as: 'paymentSummary'
+        }
+      },
+
+      // ── Shape the output ─────────────────────────────────────
+      {
+        $project: {
+          _id: 1,
+          userId: 1,
+          name: 1,
+          mobile: 1,
+          address: 1,
+          isActive: 1,
+          profileImage: 1,
+          idVerificationStatus: 1,
+          createdAt: 1,
+          subscription: { $arrayElemAt: ['$activeSubscriptions', 0] },
+          totalCollected: {
+            $ifNull: [{ $arrayElemAt: ['$paymentSummary.total', 0] }, 0]
+          }
+        }
+      }
+    ]);
 
     res.status(200).json({
       success: true,
-      count: customersWithSubscriptions.length,
-      data: customersWithSubscriptions
+      page,
+      limit,
+      total,
+      count: customers.length,
+      data: customers
     });
   } catch (error) {
     console.error('Get customers error:', error);
