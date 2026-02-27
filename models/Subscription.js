@@ -153,6 +153,10 @@ const subscriptionSchema = new mongoose.Schema({
     default: null
   },
   // Skip ledger counters
+  totalSkips: {
+    type: Number,
+    default: 0
+  },
   totalLunchSkipped: {
     type: Number,
     default: 0
@@ -160,6 +164,10 @@ const subscriptionSchema = new mongoose.Schema({
   totalDinnerSkipped: {
     type: Number,
     default: 0
+  },
+  lastExtendedAt: {
+    type: Date,
+    default: null
   },
   overrideLog: [{
     action: {

@@ -942,6 +942,11 @@ exports.getMyDailyMealSelection = (req, res) => {
 // @route   POST /api/meals/skip
 // @access  Private (Customer)
 exports.skipMeal = async (req, res) => {
+  const SubscriptionLock = require('../models/SubscriptionLock');
+  const session = await mongoose.startSession();
+  let lockAcquired = false;
+  let subscriptionId = null;
+
   try {
     // ========== RESTAURANT CLOSE CHECK (date-aware) ==========
     const RestaurantStatus = require('../models/RestaurantStatus');
@@ -968,10 +973,10 @@ exports.skipMeal = async (req, res) => {
 
     const { mealType } = req.body;
 
-    if (!mealType) {
+    if (!mealType || !['lunch', 'dinner'].includes(mealType)) {
       return res.status(400).json({
         success: false,
-        message: 'mealType required'
+        message: 'Valid mealType (lunch or dinner) required'
       });
     }
 
@@ -987,6 +992,103 @@ exports.skipMeal = async (req, res) => {
       });
     }
 
+    // Use subscription injected by requireActiveSubscription middleware
+    const subscription = req.subscription;
+    subscriptionId = subscription._id;
+
+    // ── PRE-LOCK IDEMPOTENCY CHECK ──────────────────────────────
+    // Fast-path: if already skipped, return success without acquiring lock
+    const existingOrder = await MealOrder.findOne({
+      user: req.user._id,
+      deliveryDate: deliveryMoment.toDate(),
+      mealType,
+      orderSource: 'subscription'
+    }).lean();
+
+    if (existingOrder && existingOrder.selectedMeal && existingOrder.selectedMeal.isSkip === true) {
+      const freshSub = await Subscription.findById(subscriptionId).lean();
+      console.log(`✅ skipMeal idempotent: user=${req.user._id}, mealType=${mealType}`);
+      return res.json({
+        success: true,
+        idempotent: true,
+        data: existingOrder,
+        newExpiryDate: freshSub ? freshSub.endDate : null,
+        previousExpiryDate: freshSub ? freshSub.previousExpiryDate : null,
+        totalSkips: freshSub ? (freshSub.totalSkips ?? 0) : 0,
+        totalLunchSkipped: freshSub ? (freshSub.totalLunchSkipped ?? 0) : 0,
+        totalDinnerSkipped: freshSub ? (freshSub.totalDinnerSkipped ?? 0) : 0
+      });
+    }
+
+    // ── ACQUIRE SUBSCRIPTION LOCK ────────────────────────────────
+    const lockResult = await SubscriptionLock.acquireLock(
+      subscriptionId,
+      'skip_meal',
+      req.user._id.toString()
+    );
+    if (!lockResult.success) {
+      return res.status(409).json({
+        success: false,
+        message: 'Subscription is currently being updated. Please try again in a moment.'
+      });
+    }
+    lockAcquired = true;
+
+    // ── TRANSACTION ──────────────────────────────────────────────
+    session.startTransaction();
+
+    // Re-fetch subscription inside transaction for consistency
+    const freshSubscription = await Subscription.findById(subscriptionId).session(session);
+    if (!freshSubscription || !['active', 'grace'].includes(freshSubscription.status)) {
+      await session.abortTransaction();
+      return res.status(403).json({
+        success: false,
+        message: 'Subscription is not active.'
+      });
+    }
+
+    // Re-check idempotency inside transaction (race-safe)
+    const existingOrderInTx = await MealOrder.findOne({
+      user: req.user._id,
+      deliveryDate: deliveryMoment.toDate(),
+      mealType,
+      orderSource: 'subscription'
+    }).session(session);
+
+    if (existingOrderInTx && existingOrderInTx.selectedMeal && existingOrderInTx.selectedMeal.isSkip === true) {
+      await session.abortTransaction();
+      console.log(`✅ skipMeal idempotent (in-tx): user=${req.user._id}, mealType=${mealType}`);
+      return res.json({
+        success: true,
+        idempotent: true,
+        data: existingOrderInTx,
+        newExpiryDate: freshSubscription.endDate,
+        previousExpiryDate: freshSubscription.previousExpiryDate,
+        totalSkips: freshSubscription.totalSkips ?? 0,
+        totalLunchSkipped: freshSubscription.totalLunchSkipped ?? 0,
+        totalDinnerSkipped: freshSubscription.totalDinnerSkipped ?? 0
+      });
+    }
+
+    // ── EXTEND SUBSCRIPTION ──────────────────────────────────────
+    const previousExpiryDate = new Date(freshSubscription.endDate);
+    const newEndDate = new Date(freshSubscription.endDate);
+    newEndDate.setDate(newEndDate.getDate() + 1);
+
+    freshSubscription.previousExpiryDate = previousExpiryDate;
+    freshSubscription.endDate = newEndDate;
+    freshSubscription.lastExtendedAt = new Date();
+    freshSubscription.totalSkips = (freshSubscription.totalSkips ?? 0) + 1;
+
+    if (mealType === 'lunch') {
+      freshSubscription.totalLunchSkipped = (freshSubscription.totalLunchSkipped ?? 0) + 1;
+    } else {
+      freshSubscription.totalDinnerSkipped = (freshSubscription.totalDinnerSkipped ?? 0) + 1;
+    }
+
+    await freshSubscription.save({ session });
+
+    // ── UPSERT MEAL ORDER ────────────────────────────────────────
     const order = await MealOrder.findOneAndUpdate(
       {
         user: req.user._id,
@@ -994,27 +1096,50 @@ exports.skipMeal = async (req, res) => {
         mealType
       },
       {
-        subscription: req.subscription._id,
-        orderSource: 'subscription',
-        orderDate: nowIST().toDate(),
-        cutoffTime: cutoffTime.toDate(),
-        isAfterCutoff: false,
-        status: 'confirmed',
-        selectedMeal: {
-          name: 'SKIPPED',
-          items: [],
-          isSkip: true,
-          isDefault: false
+        $set: {
+          subscription: subscriptionId,
+          orderSource: 'subscription',
+          cutoffTime: cutoffTime.toDate(),
+          isAfterCutoff: false,
+          status: 'confirmed',
+          selectedMeal: {
+            name: 'SKIPPED',
+            items: [],
+            isSkip: true,
+            isDefault: false
+          }
         }
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true, session }
     );
 
-    res.json({ success: true, data: order });
+    await session.commitTransaction();
+
+    console.log(`✅ skipMeal: user=${req.user._id}, mealType=${mealType}, newExpiry=${newEndDate.toISOString()}, totalSkips=${freshSubscription.totalSkips}`);
+
+    return res.json({
+      success: true,
+      data: order,
+      newExpiryDate: newEndDate,
+      previousExpiryDate: previousExpiryDate,
+      totalSkips: freshSubscription.totalSkips,
+      totalLunchSkipped: freshSubscription.totalLunchSkipped,
+      totalDinnerSkipped: freshSubscription.totalDinnerSkipped
+    });
 
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ success: false });
+    console.error('❌ skipMeal error:', e);
+    if (session.inTransaction()) {
+      try { await session.abortTransaction(); } catch (_) {}
+    }
+    res.status(500).json({ success: false, message: 'Failed to skip meal. Please try again.' });
+  } finally {
+    // Always release lock and end session
+    if (lockAcquired && subscriptionId) {
+      const SubscriptionLock = require('../models/SubscriptionLock');
+      await SubscriptionLock.releaseLock(subscriptionId);
+    }
+    await session.endSession();
   }
 };
 

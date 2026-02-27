@@ -10,7 +10,7 @@ const subscriptionLockSchema = new mongoose.Schema({
   },
   operation: {
     type: String,
-    enum: ['expiry_cron', 'api_update', 'pause_approval', 'payment_processing'],
+    enum: ['expiry_cron', 'api_update', 'pause_approval', 'payment_processing', 'skip_meal'],
     required: true
   },
   lockedAt: {
