@@ -1008,6 +1008,8 @@ exports.skipMeal = async (req, res) => {
     if (existingOrder && existingOrder.selectedMeal && existingOrder.selectedMeal.isSkip === true) {
       const freshSub = await Subscription.findById(subscriptionId).lean();
       console.log(`✅ skipMeal idempotent: user=${req.user._id}, mealType=${mealType}`);
+      const _idm1Lunch = freshSub ? (freshSub.totalLunchSkipped ?? 0) : 0;
+      const _idm1Dinner = freshSub ? (freshSub.totalDinnerSkipped ?? 0) : 0;
       return res.json({
         success: true,
         idempotent: true,
@@ -1015,8 +1017,9 @@ exports.skipMeal = async (req, res) => {
         newExpiryDate: freshSub ? freshSub.endDate : null,
         previousExpiryDate: freshSub ? freshSub.previousExpiryDate : null,
         totalSkips: freshSub ? (freshSub.totalSkips ?? 0) : 0,
-        totalLunchSkipped: freshSub ? (freshSub.totalLunchSkipped ?? 0) : 0,
-        totalDinnerSkipped: freshSub ? (freshSub.totalDinnerSkipped ?? 0) : 0
+        totalLunchSkipped: _idm1Lunch,
+        totalDinnerSkipped: _idm1Dinner,
+        entitledExtensionDays: Math.floor((_idm1Lunch + _idm1Dinner) / 2)
       });
     }
 
@@ -1058,6 +1061,8 @@ exports.skipMeal = async (req, res) => {
     if (existingOrderInTx && existingOrderInTx.selectedMeal && existingOrderInTx.selectedMeal.isSkip === true) {
       await session.abortTransaction();
       console.log(`✅ skipMeal idempotent (in-tx): user=${req.user._id}, mealType=${mealType}`);
+      const _idm2Lunch = freshSubscription.totalLunchSkipped ?? 0;
+      const _idm2Dinner = freshSubscription.totalDinnerSkipped ?? 0;
       return res.json({
         success: true,
         idempotent: true,
@@ -1065,8 +1070,9 @@ exports.skipMeal = async (req, res) => {
         newExpiryDate: freshSubscription.endDate,
         previousExpiryDate: freshSubscription.previousExpiryDate,
         totalSkips: freshSubscription.totalSkips ?? 0,
-        totalLunchSkipped: freshSubscription.totalLunchSkipped ?? 0,
-        totalDinnerSkipped: freshSubscription.totalDinnerSkipped ?? 0
+        totalLunchSkipped: _idm2Lunch,
+        totalDinnerSkipped: _idm2Dinner,
+        entitledExtensionDays: Math.floor((_idm2Lunch + _idm2Dinner) / 2)
       });
     }
 
@@ -1079,31 +1085,45 @@ exports.skipMeal = async (req, res) => {
       freshSubscription.totalDinnerSkipped = (freshSubscription.totalDinnerSkipped ?? 0) + 1;
     }
 
-    // ── CREDIT-BASED EXTENSION ───────────────────────────────────
-    // 1 earned extension day = mealsPerDay skips (proportional to plan)
-    // e.g. Lunch+Dinner plan: 2 skips = 1 day; Lunch-only plan: 1 skip = 1 day
-    const includesLunch = freshSubscription.mealPreferences.includesLunch;
-    const includesDinner = freshSubscription.mealPreferences.includesDinner;
+    // ── PAIR-BASED EXTENSION (2 skipped meals = 1 day) ───────────
+    // Business rule: 1 subscription day = lunch + dinner (2 meals).
+    // A full-day extension is only granted when 2 meals have been skipped.
+    //   entitledExtensionDays = floor((totalLunchSkipped + totalDinnerSkipped) / 2)
+    //
+    // Examples:
+    //   1 skip  → 0 days   3 skips → 1 day   5 skips → 2 days
+    //   2 skips → 1 day    4 skips → 2 days   6 skips → 3 days
+    const totalSkippedMeals = freshSubscription.totalLunchSkipped + freshSubscription.totalDinnerSkipped;
+    const entitledExtensionDays = Math.floor(totalSkippedMeals / 2);
 
-    let mealsPerDay = 0;
-    if (includesLunch) mealsPerDay++;
-    if (includesDinner) mealsPerDay++;
-    if (mealsPerDay === 0) mealsPerDay = 2; // safety fallback — should never happen
+    // Determine the original (base) expiry date — before any skip extensions.
+    // previousExpiryDate is anchored ONCE (on the first extension) and never
+    // changed again, so it always represents the unextended baseline and lets
+    // us know exactly how many days were already added by prior skips.
+    const baseExpiryDate = freshSubscription.previousExpiryDate
+      ? new Date(freshSubscription.previousExpiryDate)
+      : new Date(
+          new Date(freshSubscription.startDate).getTime() +
+          ((freshSubscription.totalDays - 1) * 24 * 60 * 60 * 1000)
+        );
 
-    const eligibleDays = Math.floor(freshSubscription.totalSkips / mealsPerDay);
-    const alreadyExtended = freshSubscription.extendedDays ?? 0;
-    const newDays = eligibleDays - alreadyExtended;
+    // How many extension days have already been applied to endDate
+    const currentExtensionDays = Math.round(
+      (new Date(freshSubscription.endDate).getTime() - baseExpiryDate.getTime()) /
+      (24 * 60 * 60 * 1000)
+    );
 
-    // Preserve existing previousExpiryDate unless we are extending now
-    let previousExpiryDate = freshSubscription.previousExpiryDate ?? null;
+    const additionalDaysNeeded = entitledExtensionDays - currentExtensionDays;
 
-    if (newDays > 0) {
-      previousExpiryDate = new Date(freshSubscription.endDate);
+    if (additionalDaysNeeded > 0) {
+      // Anchor previousExpiryDate to the original base expiry ONCE (idempotent anchor)
+      if (!freshSubscription.previousExpiryDate) {
+        freshSubscription.previousExpiryDate = baseExpiryDate;
+      }
       freshSubscription.endDate = new Date(
-        freshSubscription.endDate.getTime() + (newDays * 24 * 60 * 60 * 1000)
+        freshSubscription.endDate.getTime() + (additionalDaysNeeded * 24 * 60 * 60 * 1000)
       );
-      freshSubscription.previousExpiryDate = previousExpiryDate;
-      freshSubscription.extendedDays = eligibleDays;
+      freshSubscription.extendedDays = entitledExtensionDays;
       freshSubscription.lastExtendedAt = new Date();
     }
 
@@ -1136,7 +1156,7 @@ exports.skipMeal = async (req, res) => {
 
     await session.commitTransaction();
 
-    console.log(`✅ skipMeal: user=${req.user._id}, mealType=${mealType}, newExpiry=${freshSubscription.endDate.toISOString()}, totalSkips=${freshSubscription.totalSkips}, extendedDays=${freshSubscription.extendedDays ?? 0}`);
+    console.log(`✅ skipMeal: user=${req.user._id}, mealType=${mealType}, newExpiry=${freshSubscription.endDate.toISOString()}, totalSkips=${freshSubscription.totalSkips}, entitledExtensionDays=${entitledExtensionDays}`);
 
     return res.json({
       success: true,
@@ -1145,7 +1165,8 @@ exports.skipMeal = async (req, res) => {
       previousExpiryDate: freshSubscription.previousExpiryDate,
       totalSkips: freshSubscription.totalSkips,
       totalLunchSkipped: freshSubscription.totalLunchSkipped,
-      totalDinnerSkipped: freshSubscription.totalDinnerSkipped
+      totalDinnerSkipped: freshSubscription.totalDinnerSkipped,
+      entitledExtensionDays
     });
 
   } catch (e) {
