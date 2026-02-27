@@ -75,37 +75,27 @@ deliverySchema.index({ deliveryDate: 1, status: 1 });
 deliverySchema.index({ user: 1, deliveryDate: 1 }, { unique: true });
 deliverySchema.index({ user: 1, deliveryDate: 1, mealType: 1 }, { unique: true });
 
-// Method to update status with timestamp.
-// STATUS CHANGES ONLY VIA OWNER ACTION — never auto, never cron.
-deliverySchema.methods.updateStatus = async function(newStatus) {
-  const allowedStatuses = ['preparing', 'on-the-way', 'delivered', 'paused', 'disabled'];
-  if (!allowedStatuses.includes(newStatus)) {
-    throw new Error(`Invalid status: ${newStatus}. Allowed: ${allowedStatuses.join(', ')}`);
-  }
-
-  this.status = newStatus;
-
-  switch (newStatus) {
-    case 'preparing':
-      this.preparingStartTime = new Date();
-      break;
-    case 'on-the-way':
-      this.outForDeliveryTime = new Date();
-      if (!this.estimatedDeliveryTime) {
-        this.estimatedDeliveryTime = new Date(Date.now() + 60 * 60 * 1000);
-      }
-      break;
-    case 'delivered':
-      this.deliveredTime = new Date();
-      break;
-    // paused / disabled: no timestamp needed
-  }
-
-  return this.save();
-};
+// ─────────────────────────────────────────────────────────────────────────────
+// SINGLE SOURCE OF TRUTH — MANDATORY ARCHITECTURE RULE
+//
+// ALL delivery status changes MUST go through updateMealStatus().
+// updateStatus() has been intentionally removed to prevent architectural drift.
+//
+// Rationale:
+//   updateStatus() only wrote delivery.status and left lunchStatus/dinnerStatus
+//   stale, causing UI mismatch on the Home screen and the Today tab.
+//
+//   updateMealStatus() writes the per-meal status and then derives the overall
+//   delivery.status via computeDerivedStatus() — the single source of truth.
+//
+// If you find yourself needing an "overall" status update without a meal type,
+// decide which meals are affected (all of them if delivery.mealType === 'both')
+// and call updateMealStatus() for each one.
+// ─────────────────────────────────────────────────────────────────────────────
 
 // REMOVED: getDeliveryStatus() — time-based auto-override is prohibited.
-// Status ONLY changes via owner action through updateStatus() / updateMealStatus().
+// REMOVED: updateStatus() — replaced by updateMealStatus() as the single source of truth.
+// Status ONLY changes via owner action through updateMealStatus().
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Derive the overall delivery status from per-meal statuses.

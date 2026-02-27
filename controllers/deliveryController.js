@@ -106,7 +106,7 @@ exports.updateDeliveryStatus = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Delivery not found' });
     }
 
-    // Guard: no-op if already at target status
+    // ── Guard: no-op if overall status already matches ───────────
     if (delivery.status === status) {
       return res.status(200).json({
         success: true,
@@ -115,38 +115,61 @@ exports.updateDeliveryStatus = async (req, res) => {
       });
     }
 
-    // ── Enforce valid state transition ───────────────────────────
-    try {
-      DeliveryStateMachine.validateTransition(delivery.status, status);
-    } catch (transitionError) {
-      return res.status(400).json({
-        success: false,
-        message: transitionError.message,
-        allowedNext: DeliveryStateMachine.nextAllowedStatuses(delivery.status),
-      });
+    // ── SINGLE SOURCE OF TRUTH: All updates go through updateMealStatus() ──
+    // updateStatus() is removed. We validate per-meal transitions, apply per
+    // meal, and let computeDerivedStatus() derive the overall status.
+    if (delivery.mealType === 'both') {
+      // Validate both meal transitions before applying anything
+      try {
+        DeliveryStateMachine.validateTransition(delivery.lunchStatus || 'preparing', status);
+        DeliveryStateMachine.validateTransition(delivery.dinnerStatus || 'preparing', status);
+      } catch (transitionError) {
+        return res.status(400).json({
+          success: false,
+          message: transitionError.message,
+          allowedNext: DeliveryStateMachine.nextAllowedStatuses(delivery.lunchStatus || 'preparing'),
+        });
+      }
+      await delivery.updateMealStatus('lunch', status);
+      await delivery.updateMealStatus('dinner', status);
+    } else {
+      const currentMealStatus = delivery.mealType === 'lunch'
+        ? (delivery.lunchStatus || 'preparing')
+        : (delivery.dinnerStatus || 'preparing');
+      try {
+        DeliveryStateMachine.validateTransition(currentMealStatus, status);
+      } catch (transitionError) {
+        return res.status(400).json({
+          success: false,
+          message: transitionError.message,
+          allowedNext: DeliveryStateMachine.nextAllowedStatuses(currentMealStatus),
+        });
+      }
+      await delivery.updateMealStatus(delivery.mealType, status);
     }
 
-    // ── Apply status update ──────────────────────────────────────
-    await delivery.updateStatus(status);
     await delivery.populate('user');
-    await notifyDeliveryStatus(delivery, status);
 
     if (status === 'on-the-way' && req.body.deliveryBoyId) {
       delivery.deliveryBoy = req.body.deliveryBoyId;
       await delivery.save();
     }
 
-    if (status === 'delivered' && delivery.subscription) {
+    if (delivery.status === 'delivered' && delivery.subscription) {
       try { await delivery.subscription.markDayUsed(); } catch (_) { /* non-fatal */ }
     }
 
-    // ── Emit real-time event (user:id room + owners room) ───────
+    try { await notifyDeliveryStatus(delivery, status); } catch (_) { /* non-fatal */ }
+
+    // ── Emit real-time event — payload ALWAYS includes per-meal statuses ──
     socketService.emitDeliveryStatusUpdated({
       deliveryId:   delivery._id,
       userId:       delivery.user._id,
       userName:     delivery.user.name,
-      status:       delivery.status,
       mealType:     delivery.mealType,
+      status:       delivery.status,        // derived by computeDerivedStatus()
+      lunchStatus:  delivery.lunchStatus,   // per-meal — never omitted
+      dinnerStatus: delivery.dinnerStatus,  // per-meal — never omitted
       deliveryDate: delivery.deliveryDate,
       updatedAt:    new Date(),
     });
@@ -301,14 +324,13 @@ exports.getMyTodayDelivery = async (req, res) => {
       deliveryStatusMap[d.mealType] = d.status;
     }
 
-    // Determine overall status (FIXED: correct priority order)
-    const statusPriority = ['preparing', 'on-the-way', 'delivered', 'paused'];
-    let overallStatus = 'preparing'; // default if delivery doc not yet created
-    for (const priority of statusPriority) {
-      if (deliveries.some(d => d.status === priority)) {
-        overallStatus = priority;
-        break;
-      }
+    // ── computeDerivedStatus is the ONLY source of overall status truth ──
+    // Never use a manual priority loop — it conflicts with the model's rules.
+    // The unique index (user + deliveryDate) guarantees at most one delivery doc.
+    let overallStatus = 'preparing'; // default when no delivery doc exists yet
+    if (deliveries.length > 0) {
+      const d = deliveries[0];
+      overallStatus = Delivery.computeDerivedStatus(d.lunchStatus, d.dinnerStatus, d.mealType);
     }
 
     console.log(`📦 [MY TODAY DELIVERY] User ${req.user._id}: ${mealOrders.length} orders, overall: ${overallStatus}`);
@@ -561,34 +583,39 @@ exports.markAllOutForDelivery = async (req, res) => {
       });
     }
 
-    // Update all deliveries using meal-level status
+    // ── SINGLE SOURCE OF TRUTH: All updates go through updateMealStatus() ──
+    // updateMealStatus() writes the per-meal status and derives the overall
+    // delivery.status via computeDerivedStatus(). Direct field mutation is
+    // prohibited because it bypasses timestamp housekeeping and derivation.
+    // Socket events are emitted per delivery so bulk updates notify users.
     const updatePromises = deliveries.map(async (delivery) => {
       const previousStatus = delivery.status;
 
-      // Set meal-level status based on mealType
-      if (delivery.mealType === 'lunch') {
-        delivery.lunchStatus = 'on-the-way';
-      } else if (delivery.mealType === 'dinner') {
-        delivery.dinnerStatus = 'on-the-way';
+      if (delivery.mealType === 'both') {
+        await delivery.updateMealStatus('lunch', 'on-the-way');
+        await delivery.updateMealStatus('dinner', 'on-the-way');
       } else {
-        delivery.lunchStatus = 'on-the-way';
-        delivery.dinnerStatus = 'on-the-way';
+        await delivery.updateMealStatus(delivery.mealType, 'on-the-way');
       }
-
-      // Derive overall status using computeDerivedStatus
-      delivery.status = Delivery.computeDerivedStatus(
-        delivery.lunchStatus,
-        delivery.dinnerStatus,
-        delivery.mealType
-      );
-
-      delivery.outForDeliveryTime = new Date();
-      await delivery.save();
 
       await delivery.populate('user');
+
       if (previousStatus !== 'on-the-way') {
-        await notifyDeliveryStatus(delivery, 'on-the-way');
+        try { await notifyDeliveryStatus(delivery, 'on-the-way'); } catch (_) { /* non-fatal */ }
       }
+
+      // ── Emit per-delivery real-time event — bulk updates MUST notify users ──
+      socketService.emitDeliveryStatusUpdated({
+        deliveryId:   delivery._id,
+        userId:       delivery.user._id,
+        userName:     delivery.user.name,
+        mealType:     delivery.mealType,
+        status:       delivery.status,        // derived by computeDerivedStatus()
+        lunchStatus:  delivery.lunchStatus,   // per-meal — never omitted
+        dinnerStatus: delivery.dinnerStatus,  // per-meal — never omitted
+        deliveryDate: delivery.deliveryDate,
+        updatedAt:    new Date(),
+      });
 
       return delivery;
     });
@@ -829,39 +856,54 @@ exports.updateDeliveryByUser = async (req, res) => {
       return res.status(200).json({ success: true, message: 'Status already set', data: targetDelivery });
     }
 
-    try {
-      DeliveryStateMachine.validateTransition(targetDelivery.status, status);
-    } catch (transitionError) {
-      return res.status(400).json({
-        success: false,
-        message: transitionError.message,
-        allowedNext: DeliveryStateMachine.nextAllowedStatuses(targetDelivery.status),
-      });
+    // ── SINGLE SOURCE OF TRUTH: All updates go through updateMealStatus() ──
+    // updateStatus() is removed. Validate per-meal transitions so the state
+    // machine remains correct, then let computeDerivedStatus() derive the
+    // overall delivery.status. The socket payload always includes per-meal
+    // statuses so the Home screen and Today tab stay in sync.
+    if (targetDelivery.mealType === 'both') {
+      try {
+        DeliveryStateMachine.validateTransition(targetDelivery.lunchStatus || 'preparing', status);
+        DeliveryStateMachine.validateTransition(targetDelivery.dinnerStatus || 'preparing', status);
+      } catch (transitionError) {
+        return res.status(400).json({
+          success: false,
+          message: transitionError.message,
+          allowedNext: DeliveryStateMachine.nextAllowedStatuses(targetDelivery.lunchStatus || 'preparing'),
+        });
+      }
+      await targetDelivery.updateMealStatus('lunch', status);
+      await targetDelivery.updateMealStatus('dinner', status);
+    } else {
+      const currentMealStatus = targetDelivery.mealType === 'lunch'
+        ? (targetDelivery.lunchStatus || 'preparing')
+        : (targetDelivery.dinnerStatus || 'preparing');
+      try {
+        DeliveryStateMachine.validateTransition(currentMealStatus, status);
+      } catch (transitionError) {
+        return res.status(400).json({
+          success: false,
+          message: transitionError.message,
+          allowedNext: DeliveryStateMachine.nextAllowedStatuses(currentMealStatus),
+        });
+      }
+      await targetDelivery.updateMealStatus(targetDelivery.mealType, status);
     }
 
-    await targetDelivery.updateStatus(status);
     await targetDelivery.populate('user');
 
-    try {
-      const mealTypeFilter = targetDelivery.mealType && targetDelivery.mealType !== 'both'
-        ? { mealType: targetDelivery.mealType }
-        : {};
-      await MealOrder.collection.updateMany(
-        { user: targetDelivery.user._id, deliveryDate: targetDelivery.deliveryDate, ...mealTypeFilter },
-        { $set: { deliveryStatus: status } }
-      );
-    } catch (_) { /* non-fatal */ }
-
-    const payload = {
+    // ── Emit real-time event — payload ALWAYS includes per-meal statuses ──
+    socketService.emitDeliveryStatusUpdated({
       deliveryId:   targetDelivery._id,
       userId:       targetDelivery.user._id,
       userName:     targetDelivery.user.name,
-      status:       targetDelivery.status,
       mealType:     targetDelivery.mealType,
+      status:       targetDelivery.status,        // derived by computeDerivedStatus()
+      lunchStatus:  targetDelivery.lunchStatus,   // per-meal — never omitted
+      dinnerStatus: targetDelivery.dinnerStatus,  // per-meal — never omitted
       deliveryDate: targetDelivery.deliveryDate,
       updatedAt:    new Date(),
-    };
-    socketService.emitDeliveryStatusUpdated(payload);
+    });
 
     try { await notifyDeliveryStatus(targetDelivery, status); } catch (_) { /* non-fatal */ }
 
