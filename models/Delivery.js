@@ -72,8 +72,9 @@ deliverySchema.index({ user: 1, deliveryDate: 1 });
 deliverySchema.index({ deliveryDate: 1, status: 1 });
 
 // Unique indexes
+// ONE document per user per date — mealType does NOT determine document identity.
+// The mealType field inside the document tells us which meals are covered.
 deliverySchema.index({ user: 1, deliveryDate: 1 }, { unique: true });
-deliverySchema.index({ user: 1, deliveryDate: 1, mealType: 1 }, { unique: true });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SINGLE SOURCE OF TRUTH — MANDATORY ARCHITECTURE RULE
@@ -104,13 +105,14 @@ deliverySchema.index({ user: 1, deliveryDate: 1, mealType: 1 }, { unique: true }
 //   any on-the-way            → 'on-the-way'
 //   any preparing             → 'preparing'
 //   both paused               → 'paused'
-// This is called automatically by updateMealStatus().
+//
+// ARCHITECTURE RULE: ALWAYS evaluates BOTH lunchStatus and dinnerStatus.
+// mealType is intentionally NOT a parameter — the stored per-meal values are
+// the only source of truth. Passing mealType to filter which statuses to
+// include was the root cause of "update dinner → lunch appears changed".
 // ─────────────────────────────────────────────────────────────────────────────
-deliverySchema.statics.computeDerivedStatus = function(lunchStatus, dinnerStatus, mealType) {
-  const statuses = [];
-  if (mealType === 'lunch' || mealType === 'both') statuses.push(lunchStatus || 'preparing');
-  if (mealType === 'dinner' || mealType === 'both') statuses.push(dinnerStatus || 'preparing');
-  if (statuses.length === 0) return 'preparing';
+deliverySchema.statics.computeDerivedStatus = function(lunchStatus, dinnerStatus) {
+  const statuses = [lunchStatus || 'preparing', dinnerStatus || 'preparing'];
   if (statuses.every(s => s === 'delivered')) return 'delivered';
   if (statuses.some(s => s === 'on-the-way')) return 'on-the-way';
   if (statuses.some(s => s === 'preparing')) return 'preparing';
@@ -150,11 +152,11 @@ deliverySchema.methods.updateMealStatus = async function(mealType, newStatus) {
     this.deliveredTime = new Date();
   }
 
-  // Derive and write overall status
+  // Derive and write overall status — mealType is NOT passed; both stored
+  // per-meal values are always evaluated (single source of truth).
   this.status = this.constructor.computeDerivedStatus(
     this.lunchStatus,
-    this.dinnerStatus,
-    this.mealType
+    this.dinnerStatus
   );
 
   return this.save();

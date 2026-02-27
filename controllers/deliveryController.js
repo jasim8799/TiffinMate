@@ -300,7 +300,7 @@ exports.getMyTodayDelivery = async (req, res) => {
   try {
     const { startUTC: today, nextDayStartUTC: tomorrow } = getISTDayBounds();
 
-    // ── 1. Check meal orders for today ─────────────────────────
+    // ── 1. Meal orders for today ──────────────────────────────────────────────
     const mealOrders = await MealOrder.find({
       user:         req.user._id,
       deliveryDate: { $gte: today, $lt: tomorrow },
@@ -312,38 +312,45 @@ exports.getMyTodayDelivery = async (req, res) => {
       return res.status(404).json({ success: false, message: 'No meals scheduled for today' });
     }
 
-    // ── 2. Get delivery status from Delivery collection ─────────
-    const deliveries = await Delivery.find({
+    // ── 2. Single delivery document (one per user per date) ──────────────────
+    // findOne is correct — the unique index (user + deliveryDate) guarantees at
+    // most one document per user per day.
+    const delivery = await Delivery.findOne({
       user:         req.user._id,
       deliveryDate: { $gte: today, $lt: tomorrow },
     }).lean();
 
-    // Map mealType → delivery status
-    const deliveryStatusMap = {};
-    for (const d of deliveries) {
-      deliveryStatusMap[d.mealType] = d.status;
+    // Per-meal statuses read directly from the authoritative document.
+    // computeDerivedStatus(lunchStatus, dinnerStatus) evaluates BOTH values —
+    // mealType is NOT a parameter so one meal can never make overall 'delivered'
+    // while the other is still 'preparing'.
+    let lunchStatus   = 'preparing';
+    let dinnerStatus  = 'preparing';
+    let overallStatus = 'preparing';
+
+    if (delivery) {
+      lunchStatus   = delivery.lunchStatus  || 'preparing';
+      dinnerStatus  = delivery.dinnerStatus || 'preparing';
+      overallStatus = Delivery.computeDerivedStatus(lunchStatus, dinnerStatus);
     }
 
-    // ── computeDerivedStatus is the ONLY source of overall status truth ──
-    // Never use a manual priority loop — it conflicts with the model's rules.
-    // The unique index (user + deliveryDate) guarantees at most one delivery doc.
-    let overallStatus = 'preparing'; // default when no delivery doc exists yet
-    if (deliveries.length > 0) {
-      const d = deliveries[0];
-      overallStatus = Delivery.computeDerivedStatus(d.lunchStatus, d.dinnerStatus, d.mealType);
-    }
-
-    console.log(`📦 [MY TODAY DELIVERY] User ${req.user._id}: ${mealOrders.length} orders, overall: ${overallStatus}`);
+    console.log(`📦 [MY TODAY DELIVERY] User ${req.user._id}: ${mealOrders.length} orders — overall: ${overallStatus}, lunch: ${lunchStatus}, dinner: ${dinnerStatus}`);
 
     res.status(200).json({
       success: true,
       data: {
-        status:     overallStatus,
+        // Overall derived status
+        status:      overallStatus,
+        // Per-meal statuses returned explicitly so the frontend never has to
+        // infer them from the overall value or from the event's mealType.
+        lunchStatus,
+        dinnerStatus,
         mealOrders: mealOrders.map(order => ({
-          mealType:    order.mealType,
-          selectedMeal: order.selectedMeal,
-          deliveryStatus: deliveryStatusMap[order.mealType] || 'preparing',
-          deliveryDate: order.deliveryDate,
+          mealType:       order.mealType,
+          selectedMeal:   order.selectedMeal,
+          // Map the correct per-meal status to each order row
+          deliveryStatus: order.mealType === 'lunch' ? lunchStatus : dinnerStatus,
+          deliveryDate:   order.deliveryDate,
         })),
       },
     });
@@ -831,26 +838,21 @@ exports.updateDeliveryByUser = async (req, res) => {
 
     const deliveryDate = normaliseDeliveryDate(date);
 
-    const delivery = await Delivery.findOne({ user: userId, deliveryDate, mealType })
+    // ── STRICT query: user + date only — mealType does NOT identify the doc ──
+    // There is exactly ONE delivery document per user per date.
+    // The `mealType` request field tells us WHICH meal to update, not which
+    // document to find. The old two-step fallback (find by mealType, then
+    // broaden) is removed because it could silently return the wrong document.
+    const targetDelivery = await Delivery.findOne({ user: userId, deliveryDate })
       .populate('user', 'name mobile role')
       .populate('subscription');
 
-    if (!delivery) {
-      const broadDelivery = await Delivery.findOne({ user: userId, deliveryDate })
-        .populate('user', 'name mobile role')
-        .populate('subscription');
-
-      if (!broadDelivery) {
-        return res.status(404).json({
-          success: false,
-          message: `No delivery found for user ${userId} on ${date}.`,
-        });
-      }
+    if (!targetDelivery) {
+      return res.status(404).json({
+        success: false,
+        message: `No delivery found for user ${userId} on ${date}.`,
+      });
     }
-
-    const targetDelivery = delivery || await Delivery.findOne({ user: userId, deliveryDate })
-      .populate('user', 'name mobile role')
-      .populate('subscription');
 
     if (targetDelivery.status === status) {
       return res.status(200).json({ success: true, message: 'Status already set', data: targetDelivery });
