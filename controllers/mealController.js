@@ -1096,29 +1096,17 @@ exports.skipMeal = async (req, res) => {
     const totalSkippedMeals = freshSubscription.totalLunchSkipped + freshSubscription.totalDinnerSkipped;
     const entitledExtensionDays = Math.floor(totalSkippedMeals / 2);
 
-    // Determine the original (base) expiry date — before any skip extensions.
-    // previousExpiryDate is anchored ONCE (on the first extension) and never
-    // changed again, so it always represents the unextended baseline and lets
-    // us know exactly how many days were already added by prior skips.
-    const baseExpiryDate = freshSubscription.previousExpiryDate
-      ? new Date(freshSubscription.previousExpiryDate)
-      : new Date(
-          new Date(freshSubscription.startDate).getTime() +
-          ((freshSubscription.totalDays - 1) * 24 * 60 * 60 * 1000)
-        );
-
-    // How many extension days have already been applied to endDate
-    const currentExtensionDays = Math.round(
-      (new Date(freshSubscription.endDate).getTime() - baseExpiryDate.getTime()) /
-      (24 * 60 * 60 * 1000)
-    );
+    // Use extendedDays field (integer) as the authoritative record of how many
+    // extension days have already been applied — avoids all date-arithmetic
+    // rounding errors caused by timezone offsets or DST transitions.
+    const currentExtensionDays = freshSubscription.extendedDays || 0;
 
     const additionalDaysNeeded = entitledExtensionDays - currentExtensionDays;
 
     if (additionalDaysNeeded > 0) {
-      // Anchor previousExpiryDate to the original base expiry ONCE (idempotent anchor)
+      // Anchor previousExpiryDate to current endDate ONCE before moving it
       if (!freshSubscription.previousExpiryDate) {
-        freshSubscription.previousExpiryDate = baseExpiryDate;
+        freshSubscription.previousExpiryDate = new Date(freshSubscription.endDate);
       }
       freshSubscription.endDate = new Date(
         freshSubscription.endDate.getTime() + (additionalDaysNeeded * 24 * 60 * 60 * 1000)

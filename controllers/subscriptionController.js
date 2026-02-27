@@ -247,23 +247,11 @@ exports.selectPlan = async (req, res) => {
     // Use findOneAndUpdate with upsert to atomically check and create
     // This prevents race conditions where multiple requests could create duplicate subscriptions
 
-    // Calculate dates based on plan's durationType
-    const start = moment(startDate);
-    let end, totalDays;
-
-    switch (plan.durationType) {
-      case 'weekly':
-        end = moment(startDate).add(6, 'days');
-        totalDays = 7;
-        break;
-      case 'monthly':
-        end = moment(startDate).add(1, 'month').subtract(1, 'day');
-        totalDays = end.diff(start, 'days') + 1;
-        break;
-      default:
-        totalDays = plan.durationDays;
-        end = moment(startDate).add(totalDays - 1, 'days');
-    }
+    // Calculate dates based on plan's durationDays (SINGLE SOURCE OF TRUTH)
+    // Monthly = always 30 days, Weekly = always 7 days — never calendar-based
+    const start = moment(startDate).startOf('day');
+    const totalDays = plan.durationDays;
+    const end = moment(start).add(totalDays - 1, 'days');
 
     // Prepare subscription data
     const foodType =
@@ -604,25 +592,11 @@ exports.createSubscription = async (req, res) => {
       });
     }
 
-    // Calculate dates and days based on plan's durationType
-    const start = moment(startDate);
-    let end, totalDays;
-
-    switch (plan.durationType) {
-      case 'weekly':
-        end = moment(startDate).add(6, 'days');
-        totalDays = 7;
-        break;
-      case 'monthly':
-        end = moment(startDate).add(1, 'month').subtract(1, 'day');
-        totalDays = end.diff(start, 'days') + 1;
-        break;
-      default:
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid plan duration type'
-        });
-    }
+    // Calculate dates and days based on plan's durationDays (SINGLE SOURCE OF TRUTH)
+    // Monthly = always 30 days, Weekly = always 7 days — never calendar-based
+    const start = moment(startDate).startOf('day');
+    const totalDays = plan.durationDays;
+    const end = moment(start).add(totalDays - 1, 'days');
 
     const subscription = await Subscription.create({
       user: userId,
@@ -875,8 +849,9 @@ exports.renewSubscription = async (req, res) => {
       console.log(`   ⚠️  Error finding SubscriptionPlan: ${err.message}`);
     }
 
-    // Calculate new dates
-    const start = moment(startDate || new Date());
+    // Calculate new dates using durationDays (SINGLE SOURCE OF TRUTH)
+    // Monthly = always 30 days, Weekly = always 7 days — never calendar-based
+    const start = moment(startDate || new Date()).startOf('day');
     
     // Validate start date is valid
     if (!start.isValid()) {
@@ -886,18 +861,10 @@ exports.renewSubscription = async (req, res) => {
       });
     }
     
-    let end, totalDays;
-
-    switch (finalPlanType) {
-      case 'weekly':
-        end = moment(start).add(6, 'days');
-        totalDays = 7;
-        break;
-      case 'monthly':
-        end = moment(start).add(1, 'month').subtract(1, 'day');
-        totalDays = end.diff(start, 'days') + 1;
-        break;
-    }
+    const totalDays = resolvedPlan
+      ? resolvedPlan.durationDays
+      : oldSubscription.totalDays;
+    const end = moment(start).add(totalDays - 1, 'days');
 
     // Validate end date is valid
     if (!end || !end.isValid()) {
@@ -1191,24 +1158,10 @@ exports.requestSubscription = async (req, res) => {
     }
 
     // Create subscription request with pending_approval status
+    // Use durationDays (SINGLE SOURCE OF TRUTH) — never calendar-based
     const startDate = moment().startOf('day');
-    let endDate, totalDays;
-
-    switch (plan.durationType) {
-      case 'weekly':
-        endDate = moment(startDate).add(6, 'days');
-        totalDays = 7;
-        break;
-      case 'monthly':
-        endDate = moment(startDate).add(1, 'month').subtract(1, 'day');
-        totalDays = endDate.diff(startDate, 'days') + 1;
-        break;
-      default:
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid plan duration type'
-        });
-    }
+    const totalDays = plan.durationDays;
+    const endDate = moment(startDate).add(totalDays - 1, 'days');
 
     const foodType =
       plan.type === 'VEG' ? 'veg' :
@@ -1348,10 +1301,7 @@ exports.approveSubscription = async (req, res) => {
 
     // Update start and end dates if owner provided new start date
     if (startDate) {
-      const start = moment(startDate);
-      let end;
-
-      // Get duration from planDetails or linked plan - need to fetch subscription first for this
+      // Get subscription to read totalDays (SINGLE SOURCE OF TRUTH for duration)
       const subscription = await Subscription.findById(id);
       if (!subscription) {
         console.error('❌ Subscription not found:', id);
@@ -1361,19 +1311,9 @@ exports.approveSubscription = async (req, res) => {
         });
       }
 
-      const durationType = subscription.planDetails?.durationType ||
-                          (subscription.plan ? subscription.plan.durationType : null);
-
-      switch (durationType) {
-        case 'weekly':
-          end = moment(startDate).add(6, 'days');
-          break;
-        case 'monthly':
-          end = moment(startDate).add(1, 'month').subtract(1, 'day');
-          break;
-        default:
-          end = moment(startDate).add(subscription.totalDays - 1, 'days');
-      }
+      // Use day-based logic — never calendar-based (no add(1, 'month'))
+      const start = moment(startDate).startOf('day');
+      const end = moment(start).add(subscription.totalDays - 1, 'days');
 
       updateFields.startDate = start.toDate();
       updateFields.endDate = end.toDate();
