@@ -3,6 +3,7 @@ require('dotenv').config();
 console.log('🚀 Starting The Home Kitchen Backend Server...');
 
 // Defensive imports with error handling
+//test
 let express, cors, helmet, compression, morgan, http;
 try {
   express = require('express');
