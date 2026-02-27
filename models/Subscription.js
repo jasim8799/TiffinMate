@@ -169,6 +169,11 @@ const subscriptionSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  // Credit-based extension tracking: total days already applied from skip credits
+  extendedDays: {
+    type: Number,
+    default: 0
+  },
   overrideLog: [{
     action: {
       type: String,
