@@ -277,7 +277,7 @@ class CronService {
   autoAssignDefaultMeals() {
     // Run at 8:35 PM IST every day (cron: minute hour * * * *)
     // 35 20 = 8:35 PM
-    const defaultMealsJob = cron.schedule('35 20 * * *', async () => {
+    const defaultMealsJob = cron.schedule('0 2 * * *', async () => {
       const jobName = 'Auto-assign Default Meals (Lunch & Dinner)';
 
       // Check cron run guard
