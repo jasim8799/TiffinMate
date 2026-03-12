@@ -5,6 +5,7 @@ const smsService = require('../services/smsService');
 // @desc    Get all access requests
 // @route   GET /api/access-requests
 // @access  Private (Owner only)
+//test
 exports.getAllAccessRequests = async (req, res) => {
   try {
     const { status } = req.query;
