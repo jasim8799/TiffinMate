@@ -1601,7 +1601,7 @@ exports.getMyMealSelection = async (req, res) => {
     // ✅ Default meals handled by cron only - read-only endpoint
     let cutoffTime = getCutoffForDeliveryDate(deliveryMoment.toDate());
     let now = nowIST();
-    let autoDefaultsCreated = false; // Default meals handled by cron only
+    let autoDefaultsCreated = false;
 
     // Find meal orders for this date
     // ✅ USE DATE RANGE QUERY instead of equality to handle timezone edge cases
@@ -1750,22 +1750,56 @@ exports.getMyMealSelection = async (req, res) => {
     // FIX: DO NOT HIDE SKIPPED ORDERS
     // ========================================
     if (!hasLunchOrder && !hasDinnerOrder) {
-      return res.status(200).json({
-        success: true,
-        data: {
-          orderSource: 'subscription',
-          subscriptionStatus: activeSubscription.status,
-          nextDeliveryDate: deliveryDate.toISOString().split('T')[0],
-          cutoffTime: cutoffTime.format('HH:mm'),
-          isAfterCutoff: isLocked,
-          lunchLocked: isLocked,
-          dinnerLocked: isLocked,
-          lunchOrder: null,
-          dinnerOrder: null,
-          lunchIsDefault: false,
-          dinnerIsDefault: false
+      // ========================================
+      // FALLBACK: Auto-assign defaults if cutoff passed and cron missed this user
+      // ========================================
+      if (isLocked && activeSubscription && activeSubscription.status === 'active') {
+        try {
+          await ensureDefaultMealsForDate(deliveryDate);
+          autoDefaultsCreated = true;
+
+          // Re-fetch meal orders after auto-assign
+          const { start: refetchStart, end: refetchEnd } = getISTDayRange(deliveryDate);
+          mealOrders = await MealOrder.find({
+            user: req.user._id,
+            deliveryDate: { $gte: refetchStart, $lte: refetchEnd }
+          });
+
+          mealOrders.forEach(order => {
+            if (order.mealType === 'lunch') {
+              lunchMeal = order.selectedMeal;
+              lunchIsDefault = order.selectedMeal?.isDefault || false;
+              lunchSkipped = order.selectedMeal?.isSkip === true;
+            } else if (order.mealType === 'dinner') {
+              dinnerMeal = order.selectedMeal;
+              dinnerIsDefault = order.selectedMeal?.isDefault || false;
+              dinnerSkipped = order.selectedMeal?.isSkip === true;
+            }
+          });
+        } catch (fallbackErr) {
+          console.error('❌ Fallback ensureDefaultMealsForDate failed:', fallbackErr);
         }
-      });
+      }
+
+      // If still no meals after fallback (or fallback not triggered), return shell
+      if (!lunchMeal && !lunchSkipped && !dinnerMeal && !dinnerSkipped) {
+        return res.status(200).json({
+          success: true,
+          data: {
+            orderSource: 'subscription',
+            subscriptionStatus: activeSubscription.status,
+            nextDeliveryDate: deliveryDate.toISOString().split('T')[0],
+            cutoffTime: cutoffTime.format('HH:mm'),
+            isAfterCutoff: isLocked,
+            lunchLocked: isLocked,
+            dinnerLocked: isLocked,
+            lunchOrder: null,
+            dinnerOrder: null,
+            lunchIsDefault: false,
+            dinnerIsDefault: false
+          }
+        });
+      }
     }
 
     res.status(200).json({
