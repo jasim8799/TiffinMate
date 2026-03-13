@@ -12,7 +12,7 @@ const socketService = require('./socketService');
 const logger = require('../utils/logger');
 const moment = require('moment-timezone');
 const { getActiveUserIds } = require('../utils/activeUserHelper');
-const { getTodayIST, normaliseDeliveryDate, getCutoffForDeliveryDate, CUTOFF_HOUR, CUTOFF_MINUTE } = require('../utils/dateService');
+const { getTodayIST, normaliseDeliveryDate, getCutoffForDeliveryDate, CUTOFF_HOUR, CUTOFF_MINUTE, getISTDayBounds } = require('../utils/dateService');
 
 // Helper function to get current IST time
 const nowIST = () => {
@@ -376,11 +376,23 @@ class CronService {
       // ========================================
       // Only users with active subscriptions covering deliveryDate
       // DO NOT include grace — meals blocked during grace
+      //
+      // FIX: Use IST day bounds for range comparison instead of exact
+      // timestamp matching. MongoDB stores dates in UTC; comparing a
+      // plain deliveryDate (IST midnight) against UTC-stored startDate /
+      // endDate causes valid subscriptions to be excluded when the UTC
+      // offset shifts the boundary across midnight.
+      //
+      // Correct check: subscription overlaps the delivery day
+      //   startDate < endOfDeliveryDay  (subscription started before day ends)
+      //   endDate   >= startOfDeliveryDay (subscription hasn't ended yet)
+      const { startUTC, nextDayStartUTC } = getISTDayBounds(deliveryDate);
+
       const subscriptions = await Subscription.find({
         user: { $in: activeUserIds },
         status: 'active', // NEVER grace — meals blocked during grace
-        startDate: { $lte: deliveryDate },
-        endDate: { $gte: deliveryDate }
+        startDate: { $lt: nextDayStartUTC },
+        endDate: { $gte: startUTC }
       }).populate('user');
 
       logger.info(`📋 ACTIVE SUBSCRIPTIONS: ${subscriptions.length} for ${moment(deliveryDate).format('YYYY-MM-DD')}`);
