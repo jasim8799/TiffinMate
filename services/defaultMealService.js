@@ -1,7 +1,7 @@
 const MealOrder = require('../models/MealOrder');
 const Subscription = require('../models/Subscription');
 const { getActiveUserIds } = require('../utils/activeUserHelper');
-const { getISTDayRange, getCutoffForDeliveryDate } = require('../utils/dateService');
+const { getISTDayRange, getCutoffForDeliveryDate, isCutoffPassed } = require('../utils/dateService');
 const socketService = require('./socketService');
 const moment = require('moment-timezone');
 const logger = require('../utils/logger');
@@ -18,6 +18,19 @@ const logger = require('../utils/logger');
  */
 async function ensureDefaultMealsForDate(deliveryDate) {
   try {
+    // ── Cutoff guard ─────────────────────────────────────────────────────────
+    // Default meals must NEVER be auto-assigned before the 8:30 PM IST cutoff.
+    // The cron job (running at 8:35 PM) is the authoritative caller after
+    // cutoff; this guard makes on-demand calls (triggered when a user opens
+    // the app) a no-op while ordering is still open.
+    const now = moment.tz('Asia/Kolkata');
+    const cutoff = getCutoffForDeliveryDate(deliveryDate);
+    if (now.isBefore(cutoff)) {
+      logger.info('⏳ Before cutoff — skipping default meal assignment');
+      return { createdCount: 0, skippedCount: 0 };
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     const RestaurantStatus = require('../models/RestaurantStatus');
 
     const status = await RestaurantStatus.findOne();
