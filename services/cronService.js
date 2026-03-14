@@ -34,23 +34,33 @@ class CronService {
   // ========================================
   async shouldRunCronJob(jobName) {
     try {
-      const lastRun = await SystemSetting.getValue('lastCronRun');
+      const key = `lastCronRun_${jobName}`;
+
+      const lastRun = await SystemSetting.getValue(key);
 
       if (lastRun) {
         const lastRunTime = moment(lastRun);
         const timeSinceLastRun = nowIST().diff(lastRunTime, 'minutes');
 
         if (timeSinceLastRun < 10) {
-          logger.warn(`⏭️  Skipping cron job: Last run was ${timeSinceLastRun} minutes ago (guard: 10 minutes)`);
+          logger.warn(`⏭️ Skipping cron job "${jobName}" — last run ${timeSinceLastRun} minutes ago`);
           return false;
         }
       }
 
+      await SystemSetting.setValue(
+        key,
+        nowIST().toDate(),
+        `Last run for ${jobName}`,
+        'cron-service'
+      );
+
       logger.info(`✅ Cron guard passed for ${jobName}`);
+
       return true;
     } catch (error) {
-      logger.error(`❌ Error checking cron guard:`, error);
-      // Allow job to run if guard check fails (fail-safe)
+      logger.error(`❌ Cron guard error for ${jobName}`, error);
+
       return true;
     }
   }
@@ -277,7 +287,7 @@ class CronService {
   autoAssignDefaultMeals() {
     // Run at 8:35 PM IST every day (cron: minute hour * * * *)
     // 35 20 = 8:35 PM
-    const defaultMealsJob = cron.schedule('25 3 * * *', async () => {
+    const defaultMealsJob = cron.schedule('0 4 * * *', async () => {
       const jobName = 'Auto-assign Default Meals (Lunch & Dinner)';
 
       // Check cron run guard

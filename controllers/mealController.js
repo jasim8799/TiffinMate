@@ -1760,12 +1760,13 @@ exports.getMyMealSelection = async (req, res) => {
       // ========================================
       // FALLBACK: Auto-assign defaults if cutoff passed and cron missed this user
       // ========================================
-      if (isLocked && activeSubscription && activeSubscription.status === 'active') {
+      const cutoff = getCutoffForDeliveryDate(deliveryDate);
+
+      if (nowIST().isAfter(cutoff) && activeSubscription && activeSubscription.status === 'active') {
         try {
           await ensureDefaultMealsForDate(deliveryDate);
           autoDefaultsCreated = true;
 
-          // Re-fetch meal orders after auto-assign
           const { start: refetchStart, end: refetchEnd } = getISTDayRange(deliveryDate);
           mealOrders = await MealOrder.find({
             user: req.user._id,
