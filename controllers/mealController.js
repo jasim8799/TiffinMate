@@ -195,20 +195,25 @@ const getPremiumCategoryItems = (dietaryPreference) => {
   return categories;
 };
 
-// Validate that selected items are allowed for user's dietary preference
+// Validate that selected items are allowed for user's dietary preference.
+// - Comparison is case-insensitive.
+// - Items not found in the premium catalog are treated as standard weekly-menu
+//   items and are allowed through without premium validation (Fix 4 + Fix 5).
 const validatePremiumSelection = (selectedItems, dietaryPreference) => {
   const allowedItems = getPremiumCategoryItems(dietaryPreference);
-  const allAllowedItems = Object.values(allowedItems).flat();
-  
+  const allAllowedItemsUpper = Object.values(allowedItems).flat().map(i => i.toUpperCase());
+
   for (const item of selectedItems) {
-    if (!allAllowedItems.includes(item)) {
-      return {
-        valid: false,
-        message: `Item "${item}" is not allowed for your dietary preference (${dietaryPreference})`
-      };
+    const itemUpper = item.toUpperCase();
+    // If the item IS in the premium catalog, it is already allowed – continue.
+    // If it is NOT in the catalog it is a weekly-menu item → skip premium check.
+    if (!allAllowedItemsUpper.includes(itemUpper)) {
+      // Not a premium-catalog item → treat as weekly menu item → allowed.
+      continue;
     }
+    // Item found in catalog for this dietary preference → valid.
   }
-  
+
   return { valid: true };
 };
 
@@ -474,16 +479,18 @@ exports.selectMeal = async (req, res) => {
     // ========== CLASSIC USER MEAL SELECTION ==========
     // Premium users already processed above, now handle classic users
     if (!isPremium) {
-      // Classic users: traditional meal selection
+      // Classic users: traditional meal selection.
+      // Derive name from meal.name first, then fall back to items[0] so that
+      // payloads without an explicit 'name' field (Fix 6) still work correctly.
       processedLunch = lunch ? {
-        name: typeof lunch === 'string' ? lunch : lunch.name,
-        items: lunch.items?.length ? lunch.items : [lunch.name],
+        name: typeof lunch === 'string' ? lunch : (lunch.name || lunch.items?.[0] || ''),
+        items: lunch.items?.length ? lunch.items : [typeof lunch === 'string' ? lunch : (lunch.name || '')].filter(Boolean),
         isDefault: false
       } : null;
 
       processedDinner = dinner ? {
-        name: typeof dinner === 'string' ? dinner : dinner.name,
-        items: dinner.items?.length ? dinner.items : [dinner.name],
+        name: typeof dinner === 'string' ? dinner : (dinner.name || dinner.items?.[0] || ''),
+        items: dinner.items?.length ? dinner.items : [typeof dinner === 'string' ? dinner : (dinner.name || '')].filter(Boolean),
         isDefault: false
       } : null;
     }

@@ -65,19 +65,11 @@ mealOrderSchema.index(
   { unique: true, name: 'unique_user_date_mealtype' }
 );
 
-// ========================================
-// ISSUE 2 FIX: UNIQUE INDEX FOR DAILY MEALS
-// ========================================
-// Prevents duplicate daily meal orders per user per day
-// Enforces: ONE daily MealOrder per (user + deliveryDate)
-mealOrderSchema.index(
-  { user: 1, deliveryDate: 1, orderSource: 1 },
-  {
-    unique: true,
-    partialFilterExpression: { orderSource: 'daily' },
-    name: 'unique_daily_user_date'
-  }
-);
+// NOTE: The former 'unique_daily_user_date' index on {user, deliveryDate, orderSource}
+// was removed because it prevented a daily user from having BOTH lunch AND dinner
+// (both share orderSource='daily', so only one per date was allowed).
+// The primary 'unique_user_date_mealtype' index already enforces the correct
+// uniqueness: ONE order per (user + deliveryDate + mealType).
 
 // ========================================
 // PERFORMANCE INDEX: User + DeliveryDate range queries
