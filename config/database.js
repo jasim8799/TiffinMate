@@ -7,6 +7,7 @@ const connectDB = async () => {
     console.log(`📦 MongoDB Connected: ${conn.connection.host}`);
 
     // Create default admin user on first run
+    //test
     const User = require('../models/User');
     const adminExists = await User.findOne({ role: 'owner' });
     
