@@ -6,6 +6,28 @@ const connectDB = async () => {
 
     console.log(`📦 MongoDB Connected: ${conn.connection.host}`);
 
+    // ====================================================
+    // SELF-HEALING: Drop the conflicting unique_daily_user_date
+    // index from MealOrder if it still exists from a prior
+    // schema version.  That index enforced uniqueness on
+    // { user, deliveryDate, orderSource } WITHOUT mealType,
+    // which prevented a daily user from having both a lunch
+    // AND a dinner MealOrder on the same date.
+    // The correct uniqueness is already handled by the
+    // unique_user_date_mealtype index: { user, deliveryDate, mealType }.
+    // ====================================================
+    try {
+      const mealOrdersCol = conn.connection.collection('mealorders');
+      const indexes = await mealOrdersCol.indexes();
+      if (indexes.some(idx => idx.name === 'unique_daily_user_date')) {
+        await mealOrdersCol.dropIndex('unique_daily_user_date');
+        console.log('✅ DB heal: dropped conflicting index unique_daily_user_date from mealorders');
+      }
+    } catch (idxErr) {
+      // Non-fatal: log and continue. The migration script can be run manually.
+      console.warn('⚠️ Could not drop unique_daily_user_date index:', idxErr.message);
+    }
+
     // Create default admin user on first run
     const User = require('../models/User');
     const adminExists = await User.findOne({ role: 'owner' });

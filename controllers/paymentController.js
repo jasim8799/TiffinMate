@@ -66,51 +66,69 @@ async function createDailyMealOrdersFromPayment(payment) {
   const normalizedLunch = normalizeDailyMeal(lunch);
   const normalizedDinner = normalizeDailyMeal(dinner);
 
-  // Guard on the raw metadata value, not the normalized result.
-  // This ensures a dinner order is created whenever dinner was selected,
-  // even if normalizeDailyMeal() returns a falsy-looking value.
+  // Guard on the raw metadata value (not the normalised result) so a meal
+  // is created whenever the owner confirmed a payment that included it.
+  // Each meal is wrapped in its own try/catch so an E11000 duplicate-key
+  // error on one (e.g. idempotent retry) never prevents the other from
+  // being saved.  Code 11000 = duplicate key; treat as "already exists".
   if (lunch != null) {
-    await MealOrder.findOneAndUpdate(
-      {
-        user: payment.user,
-        deliveryDate: start,
-        mealType: 'lunch',
-        orderSource: 'daily'
-      },
-      {
-        $setOnInsert: {
-          selectedMeal: normalizedLunch,
-          price: pricePerMeal,
-          paymentId: payment._id,
-          status: 'confirmed',
-          orderDate: new Date(),
-          cutoffTime: getCutoffForDeliveryDate(start)
-        }
-      },
-      { upsert: true }
-    );
+    try {
+      await MealOrder.findOneAndUpdate(
+        {
+          user: payment.user,
+          deliveryDate: start,
+          mealType: 'lunch',
+          orderSource: 'daily'
+        },
+        {
+          $setOnInsert: {
+            selectedMeal: normalizedLunch,
+            price: pricePerMeal,
+            paymentId: payment._id,
+            status: 'confirmed',
+            orderDate: new Date(),
+            cutoffTime: getCutoffForDeliveryDate(start)
+          }
+        },
+        { upsert: true }
+      );
+    } catch (lunchErr) {
+      if (lunchErr.code === 11000) {
+        console.log('ℹ️  Lunch MealOrder already exists (idempotent) – skipping insert');
+      } else {
+        throw lunchErr; // re-throw unexpected errors
+      }
+    }
   }
 
   if (dinner != null) {
-    await MealOrder.findOneAndUpdate(
-      {
-        user: payment.user,
-        deliveryDate: start,
-        mealType: 'dinner',
-        orderSource: 'daily'
-      },
-      {
-        $setOnInsert: {
-          selectedMeal: normalizedDinner,
-          price: pricePerMeal,
-          paymentId: payment._id,
-          status: 'confirmed',
-          orderDate: new Date(),
-          cutoffTime: getCutoffForDeliveryDate(start)
-        }
-      },
-      { upsert: true }
-    );
+    try {
+      await MealOrder.findOneAndUpdate(
+        {
+          user: payment.user,
+          deliveryDate: start,
+          mealType: 'dinner',
+          orderSource: 'daily'
+        },
+        {
+          $setOnInsert: {
+            selectedMeal: normalizedDinner,
+            price: pricePerMeal,
+            paymentId: payment._id,
+            status: 'confirmed',
+            orderDate: new Date(),
+            cutoffTime: getCutoffForDeliveryDate(start)
+          }
+        },
+        { upsert: true }
+      );
+    } catch (dinnerErr) {
+      if (dinnerErr.code === 11000) {
+        console.log('ℹ️  Dinner MealOrder already exists (idempotent) – skipping insert');
+      } else {
+        throw dinnerErr; // re-throw unexpected errors
+      }
+    }
   }
 }
 
