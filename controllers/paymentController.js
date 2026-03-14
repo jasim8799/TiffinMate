@@ -66,7 +66,10 @@ async function createDailyMealOrdersFromPayment(payment) {
   const normalizedLunch = normalizeDailyMeal(lunch);
   const normalizedDinner = normalizeDailyMeal(dinner);
 
-  if (normalizedLunch) {
+  // Guard on the raw metadata value, not the normalized result.
+  // This ensures a dinner order is created whenever dinner was selected,
+  // even if normalizeDailyMeal() returns a falsy-looking value.
+  if (lunch != null) {
     await MealOrder.findOneAndUpdate(
       {
         user: payment.user,
@@ -76,7 +79,7 @@ async function createDailyMealOrdersFromPayment(payment) {
       },
       {
         $setOnInsert: {
-          selectedMeal: normalizedLunch,   // ✅ FIXED
+          selectedMeal: normalizedLunch,
           price: pricePerMeal,
           paymentId: payment._id,
           status: 'confirmed',
@@ -88,7 +91,7 @@ async function createDailyMealOrdersFromPayment(payment) {
     );
   }
 
-  if (normalizedDinner) {
+  if (dinner != null) {
     await MealOrder.findOneAndUpdate(
       {
         user: payment.user,
@@ -98,7 +101,7 @@ async function createDailyMealOrdersFromPayment(payment) {
       },
       {
         $setOnInsert: {
-          selectedMeal: normalizedDinner,  // ✅ FIXED
+          selectedMeal: normalizedDinner,
           price: pricePerMeal,
           paymentId: payment._id,
           status: 'confirmed',
