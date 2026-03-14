@@ -50,7 +50,8 @@ async function ensureDefaultMealsForDate(deliveryDate) {
       user: { $in: activeUserIds },
       status: 'active',
       startDate: { $lte: deliveryDate },
-      endDate: { $gte: deliveryDate }
+      endDate: { $gte: deliveryDate },
+      createdAt: { $lte: cutoff.toDate() }
     }).populate('user');
 
     logger.info(`   Active subscriptions: ${activeSubscriptions.length}`);
