@@ -285,13 +285,12 @@ class CronService {
   // ✅ After cutoff → meals assigned for TOMORROW
   // Run at 8:35 PM IST (5 minutes after cutoff)
   autoAssignDefaultMeals() {
-    // Run at 8:35 PM IST every day (cron: minute hour * * * *)
-    // 35 20 = 8:35 PM
-    const defaultMealsJob = cron.schedule('0 4 * * *', async () => {
+    // TEST MODE: Run every minute so auto-assign can be verified immediately
+    const defaultMealsJob = cron.schedule('* * * * *', async () => {
       const jobName = 'Auto-assign Default Meals (Lunch & Dinner)';
 
-      // Check cron run guard
-      if (!(await this.shouldRunCronJob(jobName))) return;
+      // TEST MODE — disable cron guard so job runs every minute
+      // if (!(await this.shouldRunCronJob(jobName))) return;
 
       const now = nowIST();
       logger.info(`\n${'='.repeat(60)}`);
@@ -299,7 +298,7 @@ class CronService {
       logger.info(`Time: ${now.format('YYYY-MM-DD HH:mm:ss z')}`);
       logger.info(`${'='.repeat(60)}`);
       logger.info(`⎰ UNIFIED_CUTOFF_TIME = ${CUTOFF_HOUR}:${CUTOFF_MINUTE} IST`);
-      logger.info('🤖 Cron executes at 8:35 PM (5-minute buffer after cutoff)');
+      logger.info('� TEST MODE: cron runs every minute for auto-assign verification');
       logger.info('📋 Assigns defaults for EFFECTIVE DELIVERY DATE (tomorrow)');
 
       try {
