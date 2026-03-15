@@ -384,14 +384,12 @@ class CronService {
       // ========================================
       // STEP 2: GET ACTIVE SUBSCRIPTIONS
       // ========================================
-      // Only users with active subscriptions covering deliveryDate
-      // DO NOT include grace — meals blocked during grace
+      // Only users with active subscriptions covering deliveryDate.
+      // DO NOT include grace — meals blocked during grace.
       //
-      // FIX: Use IST day bounds for range comparison instead of exact
-      // timestamp matching. MongoDB stores dates in UTC; comparing a
-      // plain deliveryDate (IST midnight) against UTC-stored startDate /
-      // endDate causes valid subscriptions to be excluded when the UTC
-      // offset shifts the boundary across midnight.
+      // Use IST day bounds for range comparison so that UTC-stored
+      // startDate/endDate values are compared against the correct IST
+      // day window, regardless of the UTC offset.
       //
       // Correct check: subscription overlaps the delivery day
       //   startDate < endOfDeliveryDay  (subscription started before day ends)
@@ -418,67 +416,79 @@ class CronService {
 
       for (const subscription of subscriptions) {
         try {
-          // Get day of week (0=Sunday, 6=Saturday)
-          const dayOfWeek = moment(deliveryDate).day();
-          const planType = subscription.planType || 'classic';
+          // Safety guard: skip if subscription is not active (paused subscriptions
+          // have status 'paused' and are already excluded by the query above, but
+          // guard here for belt-and-suspenders safety).
+          if (subscription.status !== 'active') {
+            skippedCount++;
+            logger.debug(`   ⏭️  Skipped (not active): ${subscription.user.name}`);
+            continue;
+          }
 
-          // Get default meal based on plan type and day
+          // ========================================
+          // DETECTION: Range query to find any existing MealOrder for tomorrow.
+          // Using $gte/$lt range (not exact timestamp) so that orders saved with
+          // any timestamp within the IST delivery day are correctly detected.
+          // This is the core fix — exact-match on deliveryDate missed orders
+          // whose stored UTC timestamp differed by even 1ms from the cron value.
+          // ========================================
+          const existingOrder = await MealOrder.findOne({
+            user: subscription.user._id,
+            mealType: mealType,
+            deliveryDate: {
+              $gte: startUTC,
+              $lt: nextDayStartUTC
+            }
+          });
+
+          if (existingOrder) {
+            // Respect skip: user deliberately skipped this meal → do not override.
+            if (existingOrder.selectedMeal && existingOrder.selectedMeal.isSkip === true) {
+              skippedCount++;
+              logger.debug(`   ⏭️  Skipped (user skipped meal): ${subscription.user.name}`);
+            } else {
+              skippedCount++;
+              logger.debug(`   ⏭️  Skipped (already selected): ${subscription.user.name}`);
+            }
+            continue;
+          }
+
+          // ========================================
+          // No existing order found → create default meal.
+          // ========================================
+          // Get day of week in IST (not server local time) to pick the correct menu.
+          const dayOfWeek = moment.tz(startUTC, 'Asia/Kolkata').day();
+          const planType = subscription.planType || 'classic';
           const defaultMealName = this.getDefaultMealForDay(dayOfWeek, planType, mealType);
 
-          // ========================================
-          // UNIFIED CUTOFF TIME (BOTH MEALS)
-          // ========================================
-          // Cutoff is 8:30 PM IST on the day BEFORE delivery — dateService is authoritative
+          // Cutoff is 8:30 PM IST on the day BEFORE delivery — dateService is authoritative.
           const cutoffTime = getCutoffForDeliveryDate(deliveryDate);
 
-          // ========================================
-          // DUPLICATE PROTECTION: UPSERT ONLY
-          // ========================================
-          // $setOnInsert ensures data is only written on INSERT
-          // If document exists, nothing happens (idempotent)
-          // Unique index enforces ONE meal per (user + date + type)
-          const result = await MealOrder.findOneAndUpdate(
-            {
-              user: subscription.user._id,
-              deliveryDate: deliveryDate,
-              mealType: mealType
+          await MealOrder.create({
+            user: subscription.user._id,
+            subscription: subscription._id,
+            deliveryDate: startUTC,
+            mealType: mealType,
+            orderDate: nowIST().toDate(),
+            orderSource: 'subscription',
+            selectedMeal: {
+              name: defaultMealName,
+              items: [],
+              isDefault: true,
+              isSkip: false
             },
-            {
-              $setOnInsert: {
-                subscription: subscription._id,
-                orderDate: nowIST().toDate(),
-                orderSource: 'subscription',
-                selectedMeal: {
-                  name: defaultMealName,
-                  items: [],
-                  isDefault: true
-                },
-                cutoffTime: cutoffTime.toDate(),
-                isAfterCutoff: true,
-                status: 'confirmed',
-                createdBy: 'cron-auto-assign'
-              }
-            },
-            {
-              upsert: true,
-              new: false, // Return old document to detect if created
-              setDefaultsOnInsert: true
-            }
-          );
+            cutoffTime: cutoffTime.toDate(),
+            isAfterCutoff: true,
+            status: 'confirmed'
+          });
 
-          // If result is null, document was created (upserted)
-          // If result exists, document already existed (skipped)
-          if (!result) {
-            assignedCount++;
-            logger.info(`   ✅ Created: ${subscription.user.name} - ${defaultMealName}`);
-            // NOTE: Per-user socket emit REMOVED - cron must NOT emit per-user UI events
-            // Production fix: emit only ONE event after cron completes (see autoAssignDefaultMeals)
-          } else {
-            skippedCount++;
-            logger.debug(`   ⏭️  Skipped: ${subscription.user.name} (already selected)`);
-          }
+          assignedCount++;
+          logger.info(`   ✅ Created: ${subscription.user.name} - ${defaultMealName}`);
+          // NOTE: Per-user socket emit intentionally omitted here.
+          // A single dashboard_refresh_required event is emitted after cron completes.
         } catch (err) {
-          // Duplicate key error (11000) - Should never happen with upsert, but handle gracefully
+          // 11000 = duplicate key — another process beat us to the insert.
+          // Treat as success (idempotent), not an error.
           if (err.code === 11000) {
             skippedCount++;
             logger.debug(`   ⚠️  Duplicate prevented: user ${subscription.user._id}`);
@@ -493,7 +503,7 @@ class CronService {
       // ========================================
       logger.info(`\n📊 SUMMARY for ${mealType.toUpperCase()}:`);
       logger.info(`   Created: ${assignedCount}`);
-      logger.info(`   Skipped: ${skippedCount} (already selected)`);
+      logger.info(`   Skipped: ${skippedCount} (already selected or skipped by user)`);
       logger.info(`   Total: ${assignedCount + skippedCount}`);
       logger.success(`✅ ${mealType} assignment completed`);
 
