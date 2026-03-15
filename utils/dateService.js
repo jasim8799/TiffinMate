@@ -26,7 +26,7 @@ const moment = require('moment-timezone');
 
 const IST = 'Asia/Kolkata';
 const CUTOFF_HOUR = 0;     // ⚠️ TESTING ONLY — restore to 20 after test
-const CUTOFF_MINUTE = 30;  // 30 minutes
+const CUTOFF_MINUTE = 55;  // ⚠️ TESTING ONLY — restore to 30 after test (cutoff = 12:55 AM)
 
 // ─────────────────────────────────────────────
 // CORE IST HELPERS
