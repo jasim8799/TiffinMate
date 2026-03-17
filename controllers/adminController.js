@@ -21,7 +21,6 @@ const { ensureDefaultMealsForDate } = require('../services/defaultMealService');
 
 // @desc    Get dashboard statistics
 // @route   GET /api/admin/dashboard
-//test
 // @access  Private (Owner only)
 exports.getDashboardStats = async (req, res) => {
   // Initialize all metrics with default values
