@@ -21,11 +21,23 @@ const connectDB = async () => {
       const indexes = await mealOrdersCol.indexes();
       if (indexes.some(idx => idx.name === 'unique_daily_user_date')) {
         await mealOrdersCol.dropIndex('unique_daily_user_date');
-        console.log('✅ DB heal: dropped conflicting index unique_daily_user_date from mealorders');
+        console.log('\u2705 DB heal: dropped conflicting index unique_daily_user_date from mealorders');
       }
     } catch (idxErr) {
       // Non-fatal: log and continue. The migration script can be run manually.
-      console.warn('⚠️ Could not drop unique_daily_user_date index:', idxErr.message);
+      console.warn('\u26a0\ufe0f Could not drop unique_daily_user_date index:', idxErr.message);
+    }
+
+    // Ensure performance index for fast per-user date lookups (critical for new users)
+    try {
+      const mealOrdersCol2 = conn.connection.collection('mealorders');
+      await mealOrdersCol2.createIndex(
+        { user: 1, deliveryDate: 1 },
+        { name: 'user_deliveryDate_perf', background: true }
+      );
+      console.log('\u2705 DB: Ensured index user_deliveryDate_perf on mealorders');
+    } catch (idxErr) {
+      console.warn('\u26a0\ufe0f Could not create user_deliveryDate_perf index:', idxErr.message);
     }
 
     // Create default admin user on first run
