@@ -5,6 +5,7 @@ const { createNotification } = require('./notificationController');
 // @desc    Submit lead from out-of-service area OR general inquiry
 // @route   POST /api/leads
 // @access  Public
+//test
 exports.submitLead = async (req, res) => {
   try {
     const { name, phone, latitude, longitude, distance, address, area, message, source } = req.body;
