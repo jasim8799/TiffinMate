@@ -248,5 +248,6 @@ function getDefaultMealForDay(dayOfWeek, planType, mealType) {
 }
 
 module.exports = {
-  ensureDefaultMealsForDate
+  ensureDefaultMealsForDate,
+  getDefaultMealForDay,
 };

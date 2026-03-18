@@ -1629,9 +1629,8 @@ exports.getMyMealSelection = async (req, res) => {
     let lunchSkipped = false;
     let dinnerSkipped = false;
 
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('🔍 Fetching meals (IST):');
-      console.log('   Kitchen-determined deliveryDate:', deliveryDate);
+    if (process.env.NODE_ENV === 'development') {
+      console.log('🔍 Fetching meals (IST):', deliveryDate);
       console.log('   Parsed moment (IST):', deliveryMoment.toISOString());
       console.log('   Timezone:', deliveryMoment.tz());
       console.log('   Query Date object:', deliveryMoment.toDate());
@@ -1661,7 +1660,7 @@ exports.getMyMealSelection = async (req, res) => {
     // 📋 UNIFIED CUTOFF LOGGING
     // ========================================
     // ✅ HARDENING FIX 3: Guard verbose logs with NODE_ENV check
-    if (process.env.NODE_ENV !== 'production') {
+    if (process.env.NODE_ENV === 'development') {
       console.log('\n========================================');
       console.log('🔍 UNIFIED CUTOFF & LOCK VERIFICATION');
       console.log('========================================');
@@ -1727,7 +1726,7 @@ exports.getMyMealSelection = async (req, res) => {
     const hasDinnerOrder = !!dinnerMeal || dinnerSkipped;
     const selectionCompleted = hasLunchOrder && hasDinnerOrder;
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (process.env.NODE_ENV === 'development') {
       console.log('🔒 FINAL LOCK STATUS:');
       console.log(`   Unified Lock: ${isLocked}`);
       console.log(`   lunchLocked = ${lunchLocked}`);
@@ -1745,7 +1744,7 @@ exports.getMyMealSelection = async (req, res) => {
     const dietaryPreference = activeSubscription?.mealPreferences?.dietaryPreference || 'both';
     const subscriptionPlanType = activeSubscription?.planType || 'classic';
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (process.env.NODE_ENV === 'development') {
       console.log(`📊 Fetching meal for user ${req.user._id} on ${deliveryMoment.format('YYYY-MM-DD')}:`);
       console.log(`   Lunch: ${lunchMeal?.name || 'Not selected'}`);
       console.log(`   Dinner: ${dinnerMeal?.name || 'Not selected'}`);
@@ -1764,15 +1763,42 @@ exports.getMyMealSelection = async (req, res) => {
 
       if (nowIST().isAfter(cutoff) && activeSubscription && activeSubscription.status === 'active') {
         try {
-          await ensureDefaultMealsForDate(deliveryDate);
+          const normDate = normaliseDeliveryDate(deliveryDate);
+          const dayOfWeek = moment.tz(deliveryDate, 'Asia/Kolkata').day();
+          const planType = activeSubscription.planType || 'classic';
+          const cutoffMoment = getCutoffForDeliveryDate(deliveryDate);
+          const { getDefaultMealForDay } = require('../services/defaultMealService');
+          for (const mt of ['lunch', 'dinner']) {
+            const exists = await MealOrder.exists({
+              user: req.user._id,
+              mealType: mt,
+              deliveryDate: { $gte: start, $lte: end }
+            });
+            if (!exists) {
+              const defaultName = getDefaultMealForDay(dayOfWeek, planType, mt);
+              await MealOrder.findOneAndUpdate(
+                { user: req.user._id, deliveryDate: normDate, mealType: mt },
+                {
+                  $setOnInsert: {
+                    subscription: activeSubscription._id,
+                    orderDate: nowIST().toDate(),
+                    orderSource: 'subscription',
+                    selectedMeal: { name: defaultName, items: [], isDefault: true, isSkip: false },
+                    cutoffTime: cutoffMoment.toDate(),
+                    isAfterCutoff: true,
+                    status: 'confirmed'
+                  }
+                },
+                { upsert: true, new: false }
+              );
+            }
+          }
           autoDefaultsCreated = true;
-
           const { start: refetchStart, end: refetchEnd } = getISTDayRange(deliveryDate);
           mealOrders = await MealOrder.find({
             user: req.user._id,
             deliveryDate: { $gte: refetchStart, $lte: refetchEnd }
           });
-
           mealOrders.forEach(order => {
             if (order.mealType === 'lunch') {
               lunchMeal = order.selectedMeal;
@@ -1785,7 +1811,7 @@ exports.getMyMealSelection = async (req, res) => {
             }
           });
         } catch (fallbackErr) {
-          console.error('❌ Fallback ensureDefaultMealsForDate failed:', fallbackErr);
+          console.error('Fallback default meal creation failed:', fallbackErr);
         }
       }
 
