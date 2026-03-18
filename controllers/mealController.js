@@ -2794,6 +2794,17 @@ exports.getOwnerAggregatedKitchen = async (req, res) => {
 
     const report = await aggregateKitchenData(targetDate);
 
+    const dateMoment = targetDate
+      ? moment.tz(targetDate, 'Asia/Kolkata').startOf('day')
+      : moment.tz('Asia/Kolkata').startOf('day');
+    const { getISTDayBounds } = require('../utils/dateService');
+    const { startUTC, nextDayStartUTC } = getISTDayBounds(dateMoment.toDate());
+    const skippedCount = await MealOrder.countDocuments({
+      deliveryDate: { $gte: startUTC, $lt: nextDayStartUTC },
+      'selectedMeal.isSkip': true,
+      status: { $ne: 'cancelled' },
+    });
+
     // ── Flatten lunch/dinner counts into lunchSummary / dinnerSummary ──
     // Group userMealDetails by mealType + mealName to produce [{meal,count}] arrays
     const lunchCounts = {};
@@ -2834,7 +2845,7 @@ exports.getOwnerAggregatedKitchen = async (req, res) => {
         dinnerSummary,
         ingredientSummary: report.ingredientSummary,
         userMealDetails,
-        paused: 0,
+        paused: skippedCount,
       },
     });
   } catch (error) {
