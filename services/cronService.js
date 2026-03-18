@@ -285,12 +285,10 @@ class CronService {
   // ✅ After cutoff → meals assigned for TOMORROW
   // Run at 8:35 PM IST (5 minutes after cutoff)
   autoAssignDefaultMeals() {
-    // TEST MODE: Run every minute so auto-assign can be verified immediately
-    const defaultMealsJob = cron.schedule('* * * * *', async () => {
+    const defaultMealsJob = cron.schedule('35 20 * * *', async () => {
       const jobName = 'Auto-assign Default Meals (Lunch & Dinner)';
 
-      // TEST MODE — disable cron guard so job runs every minute
-      // if (!(await this.shouldRunCronJob(jobName))) return;
+      if (!(await this.shouldRunCronJob(jobName))) return;
 
       const now = nowIST();
       logger.info(`\n${'='.repeat(60)}`);
@@ -298,7 +296,7 @@ class CronService {
       logger.info(`Time: ${now.format('YYYY-MM-DD HH:mm:ss z')}`);
       logger.info(`${'='.repeat(60)}`);
       logger.info(`⎰ UNIFIED_CUTOFF_TIME = ${CUTOFF_HOUR}:${CUTOFF_MINUTE} IST`);
-      logger.info('� TEST MODE: cron runs every minute for auto-assign verification');
+
       logger.info('📋 Assigns defaults for EFFECTIVE DELIVERY DATE (tomorrow)');
 
       try {
@@ -394,12 +392,14 @@ class CronService {
       //   startDate < endOfDeliveryDay  (subscription started before day ends)
       //   endDate   >= startOfDeliveryDay (subscription hasn't ended yet)
       const { startUTC, nextDayStartUTC } = getISTDayBounds(deliveryDate);
+      const todayCutoff = getCutoffForDeliveryDate(deliveryDate);
 
       const subscriptions = await Subscription.find({
         user: { $in: activeUserIds },
         status: 'active', // NEVER grace — meals blocked during grace
         startDate: { $lt: nextDayStartUTC },
-        endDate: { $gte: startUTC }
+        endDate: { $gte: startUTC },
+        createdAt: { $lte: todayCutoff.toDate() }
       }).populate('user');
 
       logger.info(`📋 ACTIVE SUBSCRIPTIONS: ${subscriptions.length} for ${moment(deliveryDate).format('YYYY-MM-DD')}`);

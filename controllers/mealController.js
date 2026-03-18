@@ -1761,7 +1761,7 @@ exports.getMyMealSelection = async (req, res) => {
       // ========================================
       const cutoff = getCutoffForDeliveryDate(deliveryDate);
 
-      if (nowIST().isAfter(cutoff) && activeSubscription && activeSubscription.status === 'active') {
+      if (nowIST().isAfter(cutoff) && activeSubscription && activeSubscription.status === 'active' && moment.tz(activeSubscription.createdAt, 'Asia/Kolkata').isSameOrBefore(cutoff)) {
         try {
           const normDate = normaliseDeliveryDate(deliveryDate);
           const dayOfWeek = moment.tz(deliveryDate, 'Asia/Kolkata').day();
