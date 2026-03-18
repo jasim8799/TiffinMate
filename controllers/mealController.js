@@ -11,7 +11,7 @@ const mongoose = require('mongoose');
 const { createNotification } = require('./notificationController');
 const User = require('../models/User');
 const { getActiveUserIds } = require('../utils/activeUserHelper');
-const { getDeliveryDateForTab, getNextOrderableDate, getCutoffForDeliveryDate, getISTDayRange } = require('../utils/dateService');
+const { getDeliveryDateForTab, getNextOrderableDate, getCutoffForDeliveryDate, getISTDayRange, normaliseDeliveryDate } = require('../utils/dateService');
 const { ensureDefaultMealsForDate } = require('../services/defaultMealService');
 
 // =========================================================
@@ -339,6 +339,7 @@ exports.selectMeal = async (req, res) => {
     // Do NOT trust frontend date - backend decides the only open slot
     const deliveryMoment = getNextOrderableDate();
     const deliveryDate = deliveryMoment.toDate();
+    const normalisedDeliveryDate = normaliseDeliveryDate(deliveryMoment);
 
     if (process.env.NODE_ENV !== 'production') {
       console.log(`🍽️ MEAL_SELECT: Using kitchen-centric delivery date: ${deliveryMoment.format('YYYY-MM-DD')}`);
@@ -498,8 +499,7 @@ exports.selectMeal = async (req, res) => {
     // Helper function to check if meal contains non-veg items (for classic users)
     const isNonVeg = (meal) => {
       if (!meal) return false;
-      // Handle both string and object formats
-      const mealName = typeof meal === 'string' ? meal : (meal.name || '');
+      const mealName = typeof meal === 'string' ? meal : (meal.name || meal.items?.[0] || '');
       const upperMeal = mealName.toUpperCase();
       return NON_VEG_KEYWORDS.some(keyword => upperMeal.includes(keyword));
     };
@@ -572,7 +572,7 @@ exports.selectMeal = async (req, res) => {
           await MealOrder.findOneAndUpdate(
             {
               user: req.user._id,
-              deliveryDate: deliveryMoment.toDate(),
+              deliveryDate: normalisedDeliveryDate,
               mealType: mt
             },
             {
@@ -620,7 +620,7 @@ exports.selectMeal = async (req, res) => {
         await MealOrder.findOneAndUpdate(
           {
             user: req.user._id,
-            deliveryDate: deliveryMoment.toDate(),
+            deliveryDate: normalisedDeliveryDate,
             mealType: 'lunch'
           },
           {
@@ -642,7 +642,7 @@ exports.selectMeal = async (req, res) => {
         await MealOrder.findOneAndUpdate(
           {
             user: req.user._id,
-            deliveryDate: deliveryMoment.toDate(),
+            deliveryDate: normalisedDeliveryDate,
             mealType: 'dinner'
           },
           {

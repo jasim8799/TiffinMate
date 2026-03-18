@@ -1,7 +1,7 @@
 const MealOrder = require('../models/MealOrder');
 const Subscription = require('../models/Subscription');
 const { getActiveUserIds } = require('../utils/activeUserHelper');
-const { getISTDayRange, getCutoffForDeliveryDate, isCutoffPassed } = require('../utils/dateService');
+const { getISTDayRange, getCutoffForDeliveryDate, isCutoffPassed, normaliseDeliveryDate } = require('../utils/dateService');
 const socketService = require('./socketService');
 const moment = require('moment-timezone');
 const logger = require('../utils/logger');
@@ -61,10 +61,11 @@ async function ensureDefaultMealsForDate(deliveryDate) {
 
     for (const subscription of activeSubscriptions) {
       // Check for lunch
+      const { start, end } = getISTDayRange(deliveryDate);
       const hasLunch = await MealOrder.exists({
         user: subscription.user._id,
-        deliveryDate: deliveryDate,
-        mealType: 'lunch'
+        mealType: 'lunch',
+        deliveryDate: { $gte: start, $lte: end }
       });
 
       if (!hasLunch) {
@@ -75,7 +76,7 @@ async function ensureDefaultMealsForDate(deliveryDate) {
         await MealOrder.findOneAndUpdate(
           {
             user: subscription.user._id,
-            deliveryDate: deliveryDate,
+            deliveryDate: normaliseDeliveryDate(deliveryDate),
             mealType: 'lunch'
           },
           {
@@ -115,8 +116,8 @@ async function ensureDefaultMealsForDate(deliveryDate) {
       // Check for dinner
       const hasDinner = await MealOrder.exists({
         user: subscription.user._id,
-        deliveryDate: deliveryDate,
-        mealType: 'dinner'
+        mealType: 'dinner',
+        deliveryDate: { $gte: start, $lte: end }
       });
 
       if (!hasDinner) {
@@ -127,7 +128,7 @@ async function ensureDefaultMealsForDate(deliveryDate) {
         await MealOrder.findOneAndUpdate(
           {
             user: subscription.user._id,
-            deliveryDate: deliveryDate,
+            deliveryDate: normaliseDeliveryDate(deliveryDate),
             mealType: 'dinner'
           },
           {
