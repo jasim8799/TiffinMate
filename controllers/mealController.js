@@ -2249,6 +2249,9 @@ exports.getAggregatedMealOrders = async (req, res) => {
       (order.orderSource === 'subscription' || order.paymentId) &&
       !order.selectedMeal?.isSkip
     );
+    const skippedCount = mealOrders.filter(order =>
+      order.selectedMeal?.isSkip === true
+    ).length;
 
     // If no meal orders found, return success with empty data
     if (filteredOrders.length === 0) {
@@ -2264,6 +2267,7 @@ exports.getAggregatedMealOrders = async (req, res) => {
           dinnerSummary: [],
           totalLunch: 0,
           totalDinner: 0,
+          skippedCount: 0,
           customerDetails: [],
           orderSummary: {
             Lunch: 0,
@@ -2444,6 +2448,7 @@ exports.getAggregatedMealOrders = async (req, res) => {
         customerDetails,
         orderSummary,
         ingredientSummary,
+        skippedCount,
         userMealDetails // ✅ NEW: User-wise meal details for kitchen table
       }
     });
