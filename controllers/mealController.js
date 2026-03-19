@@ -2786,8 +2786,7 @@ exports.getOwnerAggregatedKitchen = async (req, res) => {
       }
       targetDate = m.toDate();
     } else {
-      const { getNextOrderableDate } = require('../utils/dateService');
-      targetDate = getNextOrderableDate().toDate();
+      targetDate = moment.tz('Asia/Kolkata').startOf('day').toDate();
     }
 
     // ✅ READ-ONLY: Kitchen endpoint must NOT perform DB writes
