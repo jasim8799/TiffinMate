@@ -2785,8 +2785,10 @@ exports.getOwnerAggregatedKitchen = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Invalid date. Use YYYY-MM-DD.' });
       }
       targetDate = m.toDate();
+    } else {
+      const { getNextOrderableDate } = require('../utils/dateService');
+      targetDate = getNextOrderableDate().toDate();
     }
-    // targetDate = undefined → aggregateKitchenData defaults to today IST
 
     // ✅ READ-ONLY: Kitchen endpoint must NOT perform DB writes
     // Default meal creation moved to cron job (autoAssignDefaultMeals)
