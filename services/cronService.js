@@ -43,8 +43,13 @@ class CronService {
         const timeSinceLastRun = nowIST().diff(lastRunTime, 'minutes');
 
         if (timeSinceLastRun < 10) {
-          logger.warn(`⏭️ Skipping cron job "${jobName}" — last run ${timeSinceLastRun} minutes ago`);
-          return false;
+          const lastRunIST = moment(lastRun).tz('Asia/Kolkata');
+          const nowDate = nowIST().format('YYYY-MM-DD');
+          const lastRunDate = lastRunIST.format('YYYY-MM-DD');
+          if (nowDate === lastRunDate) {
+            logger.warn(`⏭️ Skipping cron job "${jobName}" — last run ${timeSinceLastRun} minutes ago today`);
+            return false;
+          }
         }
       }
 
@@ -285,7 +290,7 @@ class CronService {
   // ✅ After cutoff → meals assigned for TOMORROW
   // Run at 8:35 PM IST (5 minutes after cutoff)
   autoAssignDefaultMeals() {
-    const defaultMealsJob = cron.schedule('35 20 * * *', async () => {
+    const defaultMealsJob = cron.schedule('45 23 * * *', async () => {
       const jobName = 'Auto-assign Default Meals (Lunch & Dinner)';
 
       if (!(await this.shouldRunCronJob(jobName))) return;
@@ -916,7 +921,7 @@ class CronService {
       this.weeklyRepairExpiredSubscriptions(); // NEW: Weekly repair expired subscriptions
 
       logger.success(`All ${this.jobs.length} cron jobs started successfully`);
-    }, 60000); // 60 seconds delay
+    }, 5000); // 5 seconds delay
   }
 
   // Stop all cron jobs (for graceful shutdown)

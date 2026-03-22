@@ -25,8 +25,8 @@
 const moment = require('moment-timezone');
 
 const IST = 'Asia/Kolkata';
-const CUTOFF_HOUR = 20;    // Cutoff hour in IST (8:30 PM)
-const CUTOFF_MINUTE = 30;  // Cutoff minute in IST (8:30 PM)
+const CUTOFF_HOUR = 23;    // Cutoff hour in IST (11:40 PM) - TEMPORARY TEST
+const CUTOFF_MINUTE = 40;  // Cutoff minute in IST (11:40 PM) - TEMPORARY TEST
 
 // ─────────────────────────────────────────────
 // CORE IST HELPERS

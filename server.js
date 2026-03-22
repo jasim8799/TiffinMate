@@ -169,18 +169,13 @@ connectDB().then(async () => {
   }
 
   // Start cron jobs only after DB connection
-  if (process.env.ENABLE_CRON === 'true') {
-    try {
-      console.log('🔄 Starting cron jobs...');
-      const cronService = require('./services/cronService');
-      cronService.startAllJobs();
-      console.log('✅ Cron jobs started');
-    } catch (error) {
-      console.error('❌ Failed to start cron jobs:', error.message);
-      // Don't exit - server can run without cron jobs
-    }
-  } else {
-    console.log('⏭️ Cron jobs disabled (ENABLE_CRON != true)');
+  try {
+    console.log('🔄 Starting cron jobs...');
+    const cronService = require('./services/cronService');
+    cronService.startAllJobs();
+    console.log('✅ Cron jobs started');
+  } catch (error) {
+    console.error('❌ Failed to start cron jobs:', error.message);
   }
 
   // Create HTTP server
